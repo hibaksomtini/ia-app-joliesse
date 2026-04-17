@@ -6,7 +6,8 @@ from sentence_transformers import SentenceTransformer
 import requests
 from io import BytesIO
 from streamlit_cropper import st_cropper
-
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning)
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
 
