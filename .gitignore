@@ -1,0 +1,6 @@
+dist/
+build/
+*.exe
+.vs/
+__pycache__/
+temp_crop.jpg

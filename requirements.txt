@@ -1,0 +1,7 @@
+streamlit
+streamlit-cropper
+sentence-transformers
+pg8000
+pillow
+numpy
+requests
