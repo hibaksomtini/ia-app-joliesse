@@ -110,7 +110,7 @@ if menu == "🔍 Recherche":
 
         with tab_direct:
             st.info("L'IA analyse l'image entière. Idéal pour une photo centrée.")
-            st.image(img, use_container_width=True)
+            st.image(img, width='stretch')
             if st.button("LANCER LE SCAN DIRECT", type="primary", key="btn_direct"):
                 with st.spinner("Analyse globale..."):
                     st.session_state['results'] = run_search(img)

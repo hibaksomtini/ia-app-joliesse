@@ -1,7 +1,9 @@
 streamlit
 streamlit-cropper
 sentence-transformers
+torch
+torchvision
 pg8000
 pillow
-numpy
 requests
+pgvector
