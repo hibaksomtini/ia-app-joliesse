@@ -39,7 +39,7 @@ def run_search(processed_image):
         cur = conn.cursor()
         
         # On récupère tout pour comparer
-        cur.execute("SELECT product_ref, price, image_paths, embedding FROM products")
+        cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products")
         rows = cur.fetchall()
 
         results = []
@@ -73,6 +73,10 @@ def run_search(processed_image):
                 score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
                 
                 img_list = str(img_data).split('|') if img_data else []
+                if len(img_list) > 0:
+                    first_image = img_list[0].strip()
+                else:
+                    first_image = "default.jpg" # Ou ignorer le produit
                 results.append({
                     "ref": ref, 
                     "score": float(score), 
@@ -135,9 +139,9 @@ elif menu == "📦 Catalogue":
         cur = conn.cursor()
         
         if search_ref:
-            cur.execute("SELECT product_ref, price, image_paths FROM products WHERE product_ref ILIKE %s LIMIT 50", (f"%{search_ref}%",))
+            cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products WHERE product_ref ILIKE %s LIMIT 50", (f"%{search_ref}%",))
         else:
-            cur.execute("SELECT product_ref, price, image_paths FROM products ORDER BY product_ref ASC LIMIT 50")
+            cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products ORDER BY product_ref ASC LIMIT 50")
         
         rows = cur.fetchall()
         conn.close()
