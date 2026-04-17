@@ -48,34 +48,38 @@ def run_search(processed_image):
             st.write(f"Contenu échantillon : {rows[0]}")
         results = []
         for row in rows:
-            try:
-                # On déballe manuellement pour éviter le crash direct
-                ref, price, img_data, db_emb, colors = row
-            except ValueError:
-                st.error(f"❌ Erreur Unpacking : La ligne a {len(row)} éléments mais le code en attend 5.")
-                st.write(f"Données problématiques : {row}")
+            # Sécurité 1 : Vérifier qu'on a bien 5 éléments avant de déballer
+            if len(row) < 5:
                 continue
-            # RÉPARATION AUTOMATIQUE (Votre logique ✅)
-            if db_emb is None or np.array(db_emb).shape[0] != 768:
-                print(f"🛠️ Réparation du vecteur pour : {ref}")
-                try:
-                    img_name = str(img_data).split('|')[0].strip() if img_data else None
-                    if not img_name:
-                        continue
-                    resp = requests.get(STORAGE_URL + img_name, timeout=5)
-                    if resp.status_code == 200:
-                        temp_img = Image.open(BytesIO(resp.content))
-                        new_emb = model.encode(temp_img).tolist()
-                        
-                        # Formatage compatible pgvector
-                        formatted_vector = "[" + ",".join(map(str, new_emb)) + "]"
-                        cur.execute("UPDATE products SET embedding = %s WHERE product_ref = %s", (formatted_vector, ref))
-                        conn.commit()
-                        db_emb = new_emb
-                        st.toast(f"✅ Vecteur réparé : {ref}")
-                except Exception:
-                    conn.rollback() # Débloque la transaction en cas d'erreur
-                    continue
+                
+            ref, price, img_data, db_emb, colors = row
+
+            # Sécurité 2 : Gérer le cas où l'embedding est absent (None)
+            if db_emb is None:
+                # Optionnel : lancer la réparation ici si vous voulez
+                continue 
+
+            db_vec = np.array(db_emb).flatten()
+            
+            # Sécurité 3 : Vérifier la taille du vecteur (768 pour CLIP)
+            if db_vec.shape[0] != 768:
+                continue
+
+            # Calcul du score seulement si tout est OK
+            try:
+                score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
+                
+                img_list = str(img_data).split('|') if img_data else []
+                
+                results.append({
+                    "ref": ref, 
+                    "score": float(score), 
+                    "price": price if price is not None else 0.0, 
+                    "images": img_list,
+                    "colors": colors if colors is not None else "N/A" # On ajoute colors ici
+                })
+            except Exception:
+                continue
 
             # CALCUL DE SIMILARITÉ
             if db_emb:
