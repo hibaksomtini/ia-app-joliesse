@@ -48,7 +48,9 @@ def run_search(processed_image):
             if db_emb is None or np.array(db_emb).shape[0] != 768:
                 print(f"🛠️ Réparation du vecteur pour : {ref}")
                 try:
-                    img_name = str(img_data).split('|')[0].strip()
+                    img_name = str(img_data).split('|')[0].strip() if img_data else None
+                    if not img_name:
+                        continue
                     resp = requests.get(STORAGE_URL + img_name, timeout=5)
                     if resp.status_code == 200:
                         temp_img = Image.open(BytesIO(resp.content))
@@ -125,7 +127,22 @@ if menu == "🔍 Recherche":
         if 'results' in st.session_state:
             st.divider()
             st.subheader("Résultats de l'analyse")
-            # ... (votre code d'affichage des colonnes reste le même)
+            for res in st.session_state['results']:
+                with st.container(border=True):
+                    c1, c2 = st.columns([1, 2])
+                    with c1:
+                        if res['images']:
+                            # Affiche la première image du produit
+                            st.image(STORAGE_URL + res['images'][0].strip(), use_container_width=True)
+                    with c2:
+                        st.write(f"### REF: {res['ref']}")
+                        # Gestion du prix
+                        p_display = f"{res['price']:.2f} DT" if res['price'] is not None else "--- DT"
+                        st.write(f"Prix : :green[{p_display}]")
+                        
+                        # Barre de progression pour le score de match
+                        st.caption(f"Score de match : {res['score']*100:.1f}%")
+                        st.progress(min(max(res['score'], 0.0), 1.0))
 
 elif menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
