@@ -95,7 +95,7 @@ def run_search(processed_image):
                     "score": float(score), 
                     "price": price if price is not None else 0.0, # Sécurité pour le prix
                     "images": img_list if img_list else [],       # Sécurité pour les images
-                    "colors": colors if colors is not None else ""
+                    "colors": colors if colors is not None else "Non spécifié"
                 })
 
         conn.close()
@@ -150,19 +150,22 @@ if menu == "🔍 Recherche":
                             st.warning("Pas d'image")
                     with c2:
                         st.write(f"### REF: {res['ref']}")
-                        couleur = res.get('colors')
-                        if couleur and couleur.strip() and couleur != "None":
-                            st.write(f"🎨 **Couleur :** {couleur}")
+
+                        if res['colors'] != "Non spécifié":
+                            st.write(f"🎨 **Couleur :** {res['colors']}")
                         else:
                             st.caption("Couleur non spécifiée")
+
                         # Gestion du prix
                         if res['price'] > 0:
                             st.write(f"Prix : :green[{res['price']:.2f} DT]")
                         else:
                             st.write("Prix : :orange[Sur devis]")
                         score_val = res.get('score', 0.0)
+
                         if np.isnan(score_val):
                             score_val = 0.0
+
                         # Barre de progression pour le score de match
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
