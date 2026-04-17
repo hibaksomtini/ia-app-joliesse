@@ -42,9 +42,7 @@ def run_search(processed_image):
         # On récupère tout pour comparer
         cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products")
         rows = cur.fetchall()
-        if rows:
-            # LOG DE DEBUG : Affiche combien d'éléments il y a dans une ligne
-            st.write(f"Contenu échantillon : {rows[0]}")
+        
         results = []
         for row in rows:
             # Sécurité 1 : Vérifier qu'on a bien 5 éléments avant de déballer
