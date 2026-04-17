@@ -79,11 +79,11 @@ def run_search(processed_image):
 
             # CALCUL DE SIMILARITÉ
             if db_emb:
-                db_vec = np.array(db_emb).flatten()
+                db_vec_check = np.array(db_emb) if db_emb is not None else np.array([])
                 # Si le vecteur est rempli de zéros ou vide, on l'ignore
-                if db_vec.shape[0] != 768 or np.all(db_vec == 0):
+                if db_emb is None or db_vec_check.ndim == 0 or db_vec_check.shape[0] != 768:
                     continue
-                score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
+                score = np.dot(query_vec, db_vec_check) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec_check))
                 
                 img_list = str(img_data).split('|') if img_data else []
                 if len(img_list) > 0:
@@ -93,8 +93,9 @@ def run_search(processed_image):
                 results.append({
                     "ref": ref, 
                     "score": float(score), 
-                    "price": price, 
-                    "images": img_list
+                    "price": price if price is not None else 0.0, # Sécurité pour le prix
+                    "images": img_list if img_list else [],       # Sécurité pour les images
+                    "colors": colors if colors is not None else ""
                 })
 
         conn.close()
@@ -142,18 +143,29 @@ if menu == "🔍 Recherche":
                 with st.container(border=True):
                     c1, c2 = st.columns([1, 2])
                     with c1:
-                        if res['images']:
-                            # Affiche la première image du produit
-                            st.image(STORAGE_URL + res['images'][0].strip(), use_container_width=True)
+                        if res.get('images') and len(res['images']) > 0:
+                            img_url = STORAGE_URL + res['images'][0].strip()
+                            st.image(img_url, width='stretch')
+                        else:
+                            st.warning("Pas d'image")
                     with c2:
                         st.write(f"### REF: {res['ref']}")
+                        couleur = res.get('colors')
+                        if couleur and couleur.strip() and couleur != "None":
+                            st.write(f"🎨 **Couleur :** {couleur}")
+                        else:
+                            st.caption("Couleur non spécifiée")
                         # Gestion du prix
-                        p_display = f"{res['price']:.2f} DT" if res['price'] is not None else "--- DT"
-                        st.write(f"Prix : :green[{p_display}]")
-                        
+                        if res['price'] > 0:
+                            st.write(f"Prix : :green[{res['price']:.2f} DT]")
+                        else:
+                            st.write("Prix : :orange[Sur devis]")
+                        score_val = res.get('score', 0.0)
+                        if np.isnan(score_val):
+                            score_val = 0.0
                         # Barre de progression pour le score de match
-                        st.caption(f"Score de match : {res['score']*100:.1f}%")
-                        st.progress(min(max(res['score'], 0.0), 1.0))
+                        st.caption(f"Match : {score_val*100:.1f}%")
+                        st.progress(min(max(float(score_val), 0.0), 1.0))
 
 elif menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
@@ -179,7 +191,7 @@ elif menu == "📦 Catalogue":
                 price = row[1]
                 img_data = row[2]
                 db_emb = row[3]
-                colors = row[4] # C'est ici que l'erreur 'index out of range' arrive si len(row) < 5
+                colors = row[4]
                 
                 with st.expander(f"Référence : {ref}"):
                     # Ton code d'affichage habituel...
