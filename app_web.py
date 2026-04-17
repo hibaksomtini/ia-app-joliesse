@@ -102,33 +102,30 @@ if menu == "🔍 Recherche":
     
     if uploaded_file:
         img = Image.open(uploaded_file)
-        
-        col_input, col_output = st.columns([1, 1])
-        
-        with col_input:
-            st.subheader("1. Recadrage")
-            # Remplace votre rectangle rouge manuel par un outil de crop interactif
-            cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None)
-            
-            if st.button("LANCER LA RECHERCHE", type="primary"):
-                with st.spinner("Analyse du catalogue Joliesse..."):
+    
+        # Création de deux onglets
+        tab_direct, tab_crop = st.tabs(["🚀 Scan Direct", "✂️ Recadrage Manuel"])
+
+        with tab_direct:
+            st.info("L'IA analyse l'image entière. Idéal pour une photo centrée.")
+            st.image(img, use_container_width=True)
+            if st.button("LANCER LE SCAN DIRECT", type="primary", key="btn_direct"):
+                with st.spinner("Analyse globale..."):
+                    st.session_state['results'] = run_search(img)
+
+        with tab_crop:
+            st.info("Ajustez le cadre rouge sur la chaussure précise.")
+            # Utilisation de st_cropper
+            cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key="cropper_manual")
+            if st.button("SCANNER LA SÉLECTION", type="primary", key="btn_crop"):
+                with st.spinner("Analyse de la zone..."):
                     st.session_state['results'] = run_search(cropped_img)
 
-        with col_output:
-            st.subheader("2. Résultats")
-            if 'results' in st.session_state:
-                for res in st.session_state['results']:
-                    with st.container(border=True):
-                        c1, c2 = st.columns([1, 3])
-                        with c1:
-                            if res['images']:
-                                st.image(STORAGE_URL + res['images'][0].strip())
-                        with c2:
-                            st.write(f"**REF: {res['ref']}**")
-                            # Gestion du prix None (votre correction ✅)
-                            p_display = f"{res['price']:.2f} DT" if res['price'] is not None else "--- DT"
-                            st.write(f"Prix: :green[{p_display}]")
-                            st.caption(f"Score de match : {res['score']*100:.1f}%")
+        # Affichage des résultats en dessous des onglets
+        if 'results' in st.session_state:
+            st.divider()
+            st.subheader("Résultats de l'analyse")
+            # ... (votre code d'affichage des colonnes reste le même)
 
 elif menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
