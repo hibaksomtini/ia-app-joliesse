@@ -44,7 +44,6 @@ def run_search(processed_image):
         rows = cur.fetchall()
         if rows:
             # LOG DE DEBUG : Affiche combien d'éléments il y a dans une ligne
-            st.write(f"🔍 DEBUG RECHERCHE : Chaque ligne contient {len(rows[0])} colonnes.")
             st.write(f"Contenu échantillon : {rows[0]}")
         results = []
         for row in rows:
@@ -189,8 +188,6 @@ elif menu == "📦 Catalogue":
         
         rows = cur.fetchall()
         conn.close()
-        if rows:
-            st.write(f"📦 DEBUG CATALOGUE : {len(rows[0])} colonnes détectées.")
         for row in rows:
             try:
                 # Tentative de lecture sécurisée
@@ -200,9 +197,35 @@ elif menu == "📦 Catalogue":
                 db_emb = row[3]
                 colors = row[4]
                 
-                with st.expander(f"Référence : {ref}"):
-                    # Ton code d'affichage habituel...
-                    pass
+                with st.expander(f"📦 Référence : {ref}"):
+                    c1, c2 = st.columns([1, 2])
+            
+                    with c1:
+                        # Affichage de l'image du catalogue
+                        img_list = str(img_data).split('|') if img_data else []
+                        if img_list:
+                            full_url = STORAGE_URL + img_list[0].strip()
+                            st.image(full_url, width='stretch')
+                        else:
+                            st.info("Aucune image")
+
+                    with c2:
+                        # Affichage des détails
+                        st.write(f"**Prix :** {f'{price:.2f} DT' if price else ':orange[Non défini]'}")
+                
+                        # Affichage de la couleur (notre nouvelle colonne !)
+                        if colors and colors != "None":
+                            st.write(f"🎨 **Couleur :** {colors}")
+                        else:
+                            st.caption("🎨 Couleur : Non spécifiée")
+                
+                        # Statut de l'IA (Vecteur)
+                        if db_emb is not None:
+                            st.success("✅ Prêt pour l'analyse IA")
+                        else:
+                            st.warning("⚠️ Non indexé (IA inactive)")
+                            if st.button(f"Générer l'index pour {ref}", key=ref):
+                                st.info("Traitement en cours...")
             except IndexError as e:
                 st.error(f"💥 INDEX ERROR : Vous essayez d'accéder à la colonne 5 (colors), mais la ligne n'a que {len(row)} colonnes.")
                 st.write(f"Contenu de la ligne SQL : {row}")
