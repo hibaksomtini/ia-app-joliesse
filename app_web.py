@@ -45,7 +45,8 @@ def run_search(processed_image):
         results = []
         for ref, price, img_data, db_emb in rows:
             # RÉPARATION AUTOMATIQUE (Votre logique ✅)
-            if db_emb is None:
+            if db_emb is None or np.array(db_emb).shape[0] != 768:
+                print(f"🛠️ Réparation du vecteur pour : {ref}")
                 try:
                     img_name = str(img_data).split('|')[0].strip()
                     resp = requests.get(STORAGE_URL + img_name, timeout=5)
@@ -66,6 +67,9 @@ def run_search(processed_image):
             # CALCUL DE SIMILARITÉ
             if db_emb:
                 db_vec = np.array(db_emb).flatten()
+                # Si le vecteur est rempli de zéros ou vide, on l'ignore
+                if db_vec.shape[0] != 768 or np.all(db_vec == 0):
+                    continue
                 score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
                 
                 img_list = str(img_data).split('|') if img_data else []
