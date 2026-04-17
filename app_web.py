@@ -42,9 +42,19 @@ def run_search(processed_image):
         # On récupère tout pour comparer
         cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products")
         rows = cur.fetchall()
-
+        if rows:
+            # LOG DE DEBUG : Affiche combien d'éléments il y a dans une ligne
+            st.write(f"🔍 DEBUG RECHERCHE : Chaque ligne contient {len(rows[0])} colonnes.")
+            st.write(f"Contenu échantillon : {rows[0]}")
         results = []
-        for ref, price, img_data, db_emb, colors in rows:
+        for row in rows:
+            try:
+                # On déballe manuellement pour éviter le crash direct
+                ref, price, img_data, db_emb, colors = row
+            except ValueError:
+                st.error(f"❌ Erreur Unpacking : La ligne a {len(row)} éléments mais le code en attend 5.")
+                st.write(f"Données problématiques : {row}")
+                continue
             # RÉPARATION AUTOMATIQUE (Votre logique ✅)
             if db_emb is None or np.array(db_emb).shape[0] != 768:
                 print(f"🛠️ Réparation du vecteur pour : {ref}")
@@ -160,15 +170,24 @@ elif menu == "📦 Catalogue":
         
         rows = cur.fetchall()
         conn.close()
-
-        for ref, price, img_data, db_emb, colors in rows:
-            with st.expander(f"Référence : {ref}"):
-                c1, c2 = st.columns([1, 3])
-                if img_data:
-                    c1.image(STORAGE_URL + str(img_data).split('|')[0].strip(), width=150)
-                p_cat = f"{price:.2f} DT" if price is not None else "Non renseigné"
-                c2.write(f"**Prix actuel :** {p_cat}")
-                c2.button(f"Éditer {ref}", key=f"btn_{ref}")
+        if rows:
+            st.write(f"📦 DEBUG CATALOGUE : {len(rows[0])} colonnes détectées.")
+        for row in rows:
+            try:
+                # Tentative de lecture sécurisée
+                ref = row[0]
+                price = row[1]
+                img_data = row[2]
+                db_emb = row[3]
+                colors = row[4] # C'est ici que l'erreur 'index out of range' arrive si len(row) < 5
+                
+                with st.expander(f"Référence : {ref}"):
+                    # Ton code d'affichage habituel...
+                    pass
+            except IndexError as e:
+                st.error(f"💥 INDEX ERROR : Vous essayez d'accéder à la colonne 5 (colors), mais la ligne n'a que {len(row)} colonnes.")
+                st.write(f"Contenu de la ligne SQL : {row}")
+                break # Arrête la boucle pour ne pas flooder l'écran d'erreurs
                 
     except Exception as e:
         st.error(f"Impossible de charger le catalogue : {e}")
