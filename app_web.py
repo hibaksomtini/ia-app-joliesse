@@ -43,7 +43,7 @@ def run_search(processed_image):
         rows = cur.fetchall()
 
         results = []
-        for ref, price, img_data, db_emb in rows:
+        for ref, price, img_data, db_emb,colors in rows:
             # RÉPARATION AUTOMATIQUE (Votre logique ✅)
             if db_emb is None or np.array(db_emb).shape[0] != 768:
                 print(f"🛠️ Réparation du vecteur pour : {ref}")
