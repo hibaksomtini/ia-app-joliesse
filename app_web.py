@@ -146,7 +146,7 @@ elif menu == "📦 Catalogue":
         rows = cur.fetchall()
         conn.close()
 
-        for ref, price, img_data in rows:
+        for ref, price, img_data, db_emb, colors in rows:
             with st.expander(f"Référence : {ref}"):
                 c1, c2 = st.columns([1, 3])
                 if img_data:
