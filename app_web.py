@@ -68,7 +68,7 @@ def run_search(processed_image):
                 
                 # Formatage des images
                 img_list = str(img_data).split('|') if img_data else []
-                
+                print(f"Comparaison avec {ref} : Score = {score}") # Regarde dans les logs Streamlit
                 results.append({
                     "ref": ref, 
                     "score": float(score), 
