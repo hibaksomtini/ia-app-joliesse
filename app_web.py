@@ -1,291 +1,151 @@
-import warnings
-warnings.filterwarnings("ignore", category=FutureWarning)
-
-import customtkinter as ctk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageEnhance, ImageTk
+import streamlit as st
 import pg8000
 import numpy as np
+from PIL import Image
 from sentence_transformers import SentenceTransformer
-import os
-import re
-import threading
-import pandas as pd
 import requests
 from io import BytesIO
-from pgvector.pg8000 import register_vector
+from streamlit_cropper import st_cropper
 
-# --- CONFIGURATION VISUELLE ---
-ctk.set_appearance_mode("dark")
-ctk.set_default_color_theme("blue")
+# --- CONFIGURATION DE LA PAGE ---
+st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
 
-class ShoeSearchApp(ctk.CTk):
-    def __init__(self):
-        super().__init__()
-        self.title("Joliesse IA v2 - Desktop Pro")
-        self.geometry("950x950")
-    
-        self.db_config = {
-            "user": "postgres.mcmwrchllpqokgcdzmhl", 
-            "password": "Joliesse@123456",
-            "host": "aws-0-eu-west-1.pooler.supabase.com",
-            "database": "postgres",
-            "port": 6543 
-        }
-        self.storage_url = "https://mcmwrchllpqokgcdzmhl.supabase.co/storage/v1/object/public/catalogue/"
+# Paramètres de connexion (Identiques à votre app Desktop)
+DB_CONFIG = {
+    "user": "postgres.mcmwrchllpqokgcdzmhl",
+    "password": "Joliesse@123456",
+    "host": "aws-0-eu-west-1.pooler.supabase.com",
+    "database": "postgres",
+    "port": 6543
+}
+STORAGE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co/storage/v1/object/public/catalogue/"
+
+# --- CHARGEMENT DU MODÈLE IA ---
+@st.cache_resource
+def load_model():
+    return SentenceTransformer('clip-ViT-L-14')
+
+model = load_model()
+
+# --- LOGIQUE DE RECHERCHE ET RÉPARATION ---
+def run_search(processed_image):
+    # Encodage de l'image cropée
+    embedding = model.encode(processed_image, convert_to_numpy=True)
+    norm = np.linalg.norm(embedding)
+    query_vec = (embedding / norm).flatten()
+
+    try:
+        conn = pg8000.connect(**DB_CONFIG)
+        cur = conn.cursor()
         
-        print("Initialisation de l'IA (CLIP ViT-L-14)...")
-        self.model = SentenceTransformer('clip-ViT-L-14')
-        self.setup_ui()
+        # On récupère tout pour comparer
+        cur.execute("SELECT product_ref, price, image_paths, embedding FROM products")
+        rows = cur.fetchall()
 
-    def setup_ui(self):
-        self.header = ctk.CTkFrame(self, height=80, fg_color="#1f538d", corner_radius=0)
-        self.header.pack(fill="x", side="top")
-        self.title_label = ctk.CTkLabel(self.header, text="JOLIESSE IA PRO", font=("Roboto", 28, "bold"), text_color="white")
-        self.title_label.place(relx=0.5, rely=0.5, anchor="center")
+        results = []
+        for ref, price, img_data, db_emb in rows:
+            # RÉPARATION AUTOMATIQUE (Votre logique ✅)
+            if db_emb is None:
+                try:
+                    img_name = str(img_data).split('|')[0].strip()
+                    resp = requests.get(STORAGE_URL + img_name, timeout=5)
+                    if resp.status_code == 200:
+                        temp_img = Image.open(BytesIO(resp.content))
+                        new_emb = model.encode(temp_img).tolist()
+                        
+                        # Formatage compatible pgvector
+                        formatted_vector = "[" + ",".join(map(str, new_emb)) + "]"
+                        cur.execute("UPDATE products SET embedding = %s WHERE product_ref = %s", (formatted_vector, ref))
+                        conn.commit()
+                        db_emb = new_emb
+                        st.toast(f"✅ Vecteur réparé : {ref}")
+                except Exception:
+                    conn.rollback() # Débloque la transaction en cas d'erreur
+                    continue
 
-        self.control_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.control_frame.pack(pady=30, padx=30, fill="x")
-
-        self.btn_select = ctk.CTkButton(self.control_frame, text="✂️ RECADRER & CHERCHER", 
-                                        command=self.select_image, height=70, 
-                                        font=("Roboto", 18, "bold"), corner_radius=15)
-        self.btn_select.pack(side="left", expand=True, padx=10)
-
-        self.btn_full_search = ctk.CTkButton(self.control_frame, text="🔍 IMAGE ENTIÈRE", 
-                                             command=self.search_full_image, height=70,
-                                             font=("Roboto", 18, "bold"), corner_radius=15)
-        self.btn_full_search.pack(side="left", expand=True, padx=10)
-
-        self.btn_view = ctk.CTkButton(self.control_frame, text="📦 CATALOGUE", 
-                                     command=self.open_catalog_viewer, height=70,
-                                     fg_color="#3d3d3d", font=("Roboto", 14), corner_radius=15)
-        self.btn_view.pack(side="left", expand=True, padx=10)
-
-        self.preview_frame = ctk.CTkFrame(self, fg_color="transparent")
-        self.preview_frame.pack(pady=10)
-
-        self.img_preview = ctk.CTkLabel(self.preview_frame, text="Prêt pour la recherche", 
-                                        width=300, height=300, fg_color="#2b2b2b", 
-                                        corner_radius=15)
-        self.img_preview.pack()
-
-        self.results_frame = ctk.CTkScrollableFrame(self, width=800, height=500, fg_color="#1a1a1a")
-        self.results_frame.pack(pady=20, padx=20, fill="both", expand=True)
-
-    def process_image_pro(self, pil_img):
-        if pil_img.mode in ("RGBA", "P"):
-            pil_img = pil_img.convert("RGBA")
-            background = Image.new("RGBA", pil_img.size, (255, 255, 255))
-            pil_img = Image.alpha_composite(background, pil_img).convert("RGB")
-        else:
-            pil_img = pil_img.convert("RGB")
-        
-        desired_size = 224
-        pil_img.thumbnail((desired_size, desired_size), Image.Resampling.LANCZOS)
-        new_img = Image.new("RGB", (desired_size, desired_size), (255, 255, 255))
-        new_img.paste(pil_img, ((desired_size - pil_img.size[0]) // 2, (desired_size - pil_img.size[1]) // 2))
-        return new_img
-
-    def get_embedding_from_pil(self, pil_img):
-        processed = self.process_image_pro(pil_img)
-        embedding = self.model.encode(processed, convert_to_numpy=True)
-        norm = np.linalg.norm(embedding)
-        return (embedding / norm).tolist()
-
-    def run_search(self, path):
-        self.after(0, self.clear_results)
-        try:
-            conn = pg8000.connect(**self.db_config)
-            register_vector(conn)
-            cur = conn.cursor()
-
-            img_search = Image.open(path)
-            query_vec = np.array(self.get_embedding_from_pil(img_search)).flatten()
-
-            cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products")
-            rows = cur.fetchall()
-
-            results = []
-            for ref, price, img_data, db_emb, colors in rows:
-                if db_emb is None or len(db_emb) != 768:
-                    try:
-                        image_name = str(img_data).split('|')[0].strip()
-                        url = self.storage_url + image_name
-                        resp = requests.get(url, timeout=5)
-        
-                        if resp.status_code == 200:
-                            img = Image.open(BytesIO(resp.content))
-                            db_emb_list = self.get_embedding_from_pil(img)
-                            formatted_vector = "[" + ",".join(map(str, db_emb_list)) + "]"
-                            cur.execute("UPDATE products SET embedding = %s WHERE product_ref = %s", (formatted_vector, ref))
-                            conn.commit()
-                            db_emb = db_emb_list
-                            print(f"✅ Vecteur réparé : {ref}")
-                        else: continue
-                    except Exception:
-                        conn.rollback()
-                        continue
-
+            # CALCUL DE SIMILARITÉ
+            if db_emb:
                 db_vec = np.array(db_emb).flatten()
                 score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
+                
                 img_list = str(img_data).split('|') if img_data else []
-                results.append({"ref": ref, "score": float(score), "price": price, "images": img_list, "colors": colors})
+                results.append({
+                    "ref": ref, 
+                    "score": float(score), 
+                    "price": price, 
+                    "images": img_list
+                })
 
-            results.sort(key=lambda x: x["score"], reverse=True)
-            
-            for res in results[:8]:
-                self.after(0, lambda r=res: self.create_result_card(
-                    r.get("ref"), r.get("score"), r.get("price"), r.get("colors"), r.get("images")
-                ))
-            
-            self.after(0, lambda: self.btn_full_search.configure(text="🔍 IMAGE ENTIÈRE", state="normal"))
-            conn.close()
-        except Exception as e: print(f"❌ Erreur : {e}")
+        conn.close()
+        # Tri par meilleur score
+        return sorted(results, key=lambda x: x["score"], reverse=True)[:10]
+    except Exception as e:
+        st.error(f"Erreur de connexion base de données : {e}")
+        return []
 
-    def create_result_card(self, ref, score, price=0.0, colors=None, image_list=None):
-        card = ctk.CTkFrame(self.results_frame, fg_color="#252525", border_width=1, border_color="#3d3d3d")
-        card.pack(fill="x", pady=8, padx=10)
+# --- INTERFACE UTILISATEUR ---
+st.title("👟 JOLIESSE IA - Système de Détection")
+
+# Menu de navigation
+menu = st.sidebar.radio("Menu", ["🔍 Recherche", "📦 Catalogue"])
+
+if menu == "🔍 Recherche":
+    uploaded_file = st.file_uploader("Charger une photo de chaussure", type=['jpg', 'jpeg', 'png'])
+    
+    if uploaded_file:
+        img = Image.open(uploaded_file)
         
-        img_label = ctk.CTkLabel(card, text="⌛", width=130, height=130)
-        img_label.pack(side="left", padx=10, pady=10)
-
-        def load_image():
-            if image_list:
-                url = self.storage_url + image_list[0].strip()
-                try:
-                    res = requests.get(url, timeout=5)
-                    if res.status_code == 200:
-                        img_pil = Image.open(BytesIO(res.content))
-                        ctk_img = ctk.CTkImage(light_image=img_pil, size=(130, 130))
-                        img_label.configure(image=ctk_img, text="")
-                except: img_label.configure(text="❌")
-        threading.Thread(target=load_image, daemon=True).start()
-
-        txt_frame = ctk.CTkFrame(card, fg_color="transparent")
-        txt_frame.pack(side="left", padx=20, fill="both", expand=True)
-        ctk.CTkLabel(txt_frame, text=f"REF: {ref}", font=("Roboto", 18, "bold")).pack(anchor="w")
+        col_input, col_output = st.columns([1, 1])
         
-        display_price = f"{price:.2f}" if price is not None else "0.00"
-        ctk.CTkLabel(txt_frame, text=f"Prix: {display_price} DT", text_color="#27ae60", font=("Roboto", 16)).pack(anchor="w")
-        ctk.CTkLabel(txt_frame, text=f"Match: {score*100:.2f}%", text_color="#f1c40f").pack(anchor="w")
+        with col_input:
+            st.subheader("1. Recadrage")
+            # Remplace votre rectangle rouge manuel par un outil de crop interactif
+            cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None)
+            
+            if st.button("LANCER LA RECHERCHE", type="primary"):
+                with st.spinner("Analyse du catalogue Joliesse..."):
+                    st.session_state['results'] = run_search(cropped_img)
 
-    def select_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png")])
-        if path: self.open_crop_tool(path)
+        with col_output:
+            st.subheader("2. Résultats")
+            if 'results' in st.session_state:
+                for res in st.session_state['results']:
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 3])
+                        with c1:
+                            if res['images']:
+                                st.image(STORAGE_URL + res['images'][0].strip())
+                        with c2:
+                            st.write(f"**REF: {res['ref']}**")
+                            # Gestion du prix None (votre correction ✅)
+                            p_display = f"{res['price']:.2f} DT" if res['price'] is not None else "--- DT"
+                            st.write(f"Prix: :green[{p_display}]")
+                            st.caption(f"Score de match : {res['score']*100:.1f}%")
 
-    def search_full_image(self):
-        path = filedialog.askopenfilename(filetypes=[("Images", "*.jpg *.jpeg *.png")])
-        if path:
-            img = Image.open(path)
-            self.img_preview.configure(image=ctk.CTkImage(light_image=img, size=(280, 280)), text="")
-            self.btn_full_search.configure(text="⌛ Analyse...", state="disabled")
-            threading.Thread(target=self.run_search, args=(path,), daemon=True).start()
+elif menu == "📦 Catalogue":
+    st.subheader("Explorateur de stock")
+    search_ref = st.text_input("🔍 Rechercher par référence", placeholder="Ex: 4414")
+    
+    try:
+        conn = pg8000.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        
+        if search_ref:
+            cur.execute("SELECT product_ref, price, image_paths FROM products WHERE product_ref ILIKE %s LIMIT 50", (f"%{search_ref}%",))
+        else:
+            cur.execute("SELECT product_ref, price, image_paths FROM products ORDER BY product_ref ASC LIMIT 50")
+        
+        rows = cur.fetchall()
+        conn.close()
 
-    def clear_results(self):
-        for widget in self.results_frame.winfo_children(): widget.destroy()
-
-    def open_crop_tool(self, image_path):
-        crop_window = ctk.CTkToplevel(self)
-        crop_window.title("Recadrer l'article")
-        crop_window.geometry("800x950")
-        crop_window.attributes("-topmost", True)
-        crop_window.grab_set()
-
-        top_bar = ctk.CTkFrame(crop_window, height=60)
-        top_bar.pack(fill="x", side="top", padx=10, pady=10)
-
-        original_pil = Image.open(image_path).convert("RGB")
-        display_width = 700
-        ratio = original_pil.width / display_width
-        display_h = int(original_pil.height / ratio)
-        img_display = original_pil.resize((display_width, display_h), Image.Resampling.LANCZOS)
-        tk_img = ImageTk.PhotoImage(img_display)
-
-        self.crop_data = {"x1": 0, "y1": 0, "x2": 0, "y2": 0, "active": False}
-        canvas = ctk.CTkCanvas(crop_window, width=display_width, height=display_h, highlightthickness=0)
-        canvas.pack(pady=10)
-        canvas.create_image(0, 0, anchor="nw", image=tk_img)
-        canvas.image = tk_img 
-
-        rect_id = [None]
-        def on_press(e):
-            self.crop_data["x1"], self.crop_data["y1"] = e.x, e.y
-            self.crop_data["active"] = True
-            if rect_id[0]: canvas.delete(rect_id[0])
-            rect_id[0] = canvas.create_rectangle(e.x, e.y, e.x, e.y, outline='red', width=3)
-
-        def on_drag(e):
-            if self.crop_data["active"]:
-                self.crop_data["x2"], self.crop_data["y2"] = e.x, e.y
-                canvas.coords(rect_id[0], self.crop_data["x1"], self.crop_data["y1"], e.x, e.y)
-
-        canvas.bind("<ButtonPress-1>", on_press)
-        canvas.bind("<B1-Motion>", on_drag)
-
-        def validate():
-            if self.crop_data["x2"] == 0:
-                messagebox.showwarning("Attention", "Dessinez un rectangle")
-                return
-            left, top = min(self.crop_data["x1"], self.crop_data["x2"]) * ratio, min(self.crop_data["y1"], self.crop_data["y2"]) * ratio
-            right, bottom = max(self.crop_data["x1"], self.crop_data["x2"]) * ratio, max(self.crop_data["y1"], self.crop_data["y2"]) * ratio
-            cropped = original_pil.crop((left, top, right, bottom))
-            cropped.save("temp_crop.jpg")
-            self.img_preview.configure(image=ctk.CTkImage(light_image=cropped, size=(280, 280)), text="")
-            crop_window.destroy()
-            self.btn_full_search.configure(text="⌛ Analyse crop...", state="disabled")
-            threading.Thread(target=self.run_search, args=("temp_crop.jpg",), daemon=True).start()
-
-        ctk.CTkButton(top_bar, text="✅ LANCER LA RECHERCHE", fg_color="#27ae60", command=validate).pack(expand=True)
-
-    def open_catalog_viewer(self):
-        viewer = ctk.CTkToplevel(self)
-        viewer.title("Catalogue")
-        viewer.geometry("700x900")
-        viewer.attributes("-topmost", True)
-
-        search_frame = ctk.CTkFrame(viewer, fg_color="transparent")
-        search_frame.pack(fill="x", padx=20, pady=15)
-        search_entry = ctk.CTkEntry(search_frame, placeholder_text="🔍 Référence...", height=40)
-        search_entry.pack(side="left", fill="x", expand=True, padx=10)
-
-        scroll = ctk.CTkScrollableFrame(viewer, fg_color="#1a1a1a")
-        scroll.pack(fill="both", expand=True, padx=10, pady=10)
-
-        def refresh(text=""):
-            for w in scroll.winfo_children(): w.destroy()
-            try:
-                conn = pg8000.connect(**self.db_config)
-                cur = conn.cursor()
-                if text:
-                    cur.execute("SELECT product_ref, price, image_paths FROM products WHERE product_ref ILIKE %s LIMIT 50", (f"%{text}%",))
-                else:
-                    cur.execute("SELECT product_ref, price, image_paths FROM products ORDER BY product_ref ASC LIMIT 50")
-                for ref, pr, img in cur.fetchall():
-                    f = ctk.CTkFrame(scroll, fg_color="#2b2b2b", height=100)
-                    f.pack(fill="x", pady=5)
-                    l_img = ctk.CTkLabel(f, text="⌛", width=80)
-                    l_img.pack(side="left", padx=10)
-                    def load(lbl=l_img, d=img):
-                        if d:
-                            try:
-                                url = self.storage_url + str(d).split('|')[0].strip()
-                                r = requests.get(url, timeout=3)
-                                i = Image.open(BytesIO(r.content))
-                                i.thumbnail((80, 80))
-                                lbl.after(0, lambda: lbl.configure(image=ctk.CTkImage(light_image=i, size=(80, 80)), text=""))
-                            except: lbl.after(0, lambda: lbl.configure(text="❌"))
-                    threading.Thread(target=load, daemon=True).start()
-                    ctk.CTkLabel(f, text=f"REF: {ref}", font=("Roboto", 14, "bold")).pack(side="left", padx=10)
-                    p_txt = f"{pr:.2f} DT" if pr is not None else "--- DT"
-                    ctk.CTkLabel(f, text=p_txt, text_color="#27ae60").pack(side="right", padx=20)
-                conn.close()
-            except Exception as e: print(e)
-
-        search_entry.bind("<Return>", lambda e: refresh(search_entry.get()))
-        ctk.CTkButton(search_frame, text="Filtrer", command=lambda: refresh(search_entry.get())).pack(side="right")
-        refresh()
-
-if __name__ == "__main__":
-    app = ShoeSearchApp()
-    app.mainloop()
+        for ref, price, img_data in rows:
+            with st.expander(f"Référence : {ref}"):
+                c1, c2 = st.columns([1, 3])
+                if img_data:
+                    c1.image(STORAGE_URL + str(img_data).split('|')[0].strip(), width=150)
+                p_cat = f"{price:.2f} DT" if price is not None else "Non renseigné"
+                c2.write(f"**Prix actuel :** {p_cat}")
+                c2.button(f"Éditer {ref}", key=f"btn_{ref}")
+                
+    except Exception as e:
+        st.error(f"Impossible de charger le catalogue : {e}")
