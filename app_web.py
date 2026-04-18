@@ -119,32 +119,38 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            st.info("💡 Si l'image ne s'affiche pas, attendez 2 secondes ou réduisez la zone.")
+            st.info("💡 Ajustez le cadre rouge. Si l'image ne s'affiche pas, vérifiez la connexion.")
             
-            # OPTIMISATION : On réduit la taille de l'image juste pour l'affichage du crop
-            # pour éviter que le navigateur ne bloque
-            img_display = img.copy()
-            img_display.thumbnail((800, 800)) 
+            # 1. On prépare l'image pour l'affichage (max 800px pour la fluidité)
+            # On utilise .copy() pour ne pas modifier l'originale
+            img_for_crop = img.copy()
+            img_for_crop.thumbnail((800, 800)) 
 
-            # Affichage du cropper avec des paramètres de secours
-            cropped_img = st_cropper(
-                img_display, 
-                realtime_update=True, 
-                box_color='#FF0000', 
-                aspect_ratio=None, 
-                key="cropper_v3",
-                should_resize_canvas=True,
-                use_container_width=True # Force l'image à prendre toute la largeur
-            )
+            try:
+                # 2. Appel du cropper avec des paramètres simplifiés
+                cropped_img = st_cropper(
+                    img_for_crop, 
+                    realtime_update=True, 
+                    box_color='#FF0000', 
+                    aspect_ratio=None, 
+                    key="cropper_final_v1" # On change la clé pour forcer le reset
+                )
+                
+                # 3. Si le cropper renvoie une image, on l'affiche et on propose le bouton
+                if cropped_img:
+                    st.write("Aperçu de la zone à scanner :")
+                    st.image(cropped_img, width=150)
+
+                    if st.button("LANCER L'ANALYSE", type="primary"):
+                        with st.spinner("Analyse en cours..."):
+                            # On s'assure que l'image est en RGB avant l'IA
+                            if cropped_img.mode != 'RGB':
+                                cropped_img = cropped_img.convert('RGB')
+                            st.session_state['results'] = run_search(cropped_img)
             
-            if cropped_img:
-                st.subheader("Aperçu du recadrage")
-                st.image(cropped_img, width=200)
-
-                if st.button("LANCER L'ANALYSE", type="primary", key="btn_do_crop"):
-                    with st.spinner("Analyse en cours..."):
-                        # On utilise l'image cropée pour la recherche
-                        st.session_state['results'] = run_search(cropped_img)
+            except Exception as e:
+                st.error(f"Erreur technique avec le recadrage : {e}")
+                st.info("Utilisez le 'Scan Direct' si le recadrage manuel bloque sur ce téléphone.")
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
