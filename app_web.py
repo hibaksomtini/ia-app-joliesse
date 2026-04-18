@@ -79,8 +79,11 @@ def run_search(processed_image):
                 if score > 0.1: 
                     img_list = str(img_data).split('|') if img_data else []
                     results.append({
-                        "ref": ref, "score": float(score), "price": price, 
-                        "images": img_list, "colors": colors
+                        "ref": ref, 
+                        "score": float(score), 
+                        "price": float(price) if price is not None else 0.0,
+                        "images": img_list,
+                        "colors": colors if colors else "N/A"
                     })
             except Exception as e:
                 print(f"Error processing {ref}: {e}")
@@ -145,10 +148,13 @@ if menu == "🔍 Recherche":
                             st.caption("Couleur non spécifiée")
 
                         # Gestion du prix
-                        if res['price'] > 0:
-                            st.write(f"Prix : :green[{res['price']:.2f} DT]")
+                        current_price = res.get('price')
+            
+                        if current_price is not None and float(current_price) > 0:
+                            st.write(f"Prix : :green[{float(current_price):.2f} DT]")
                         else:
-                            st.write("Prix : :orange[Sur devis]")
+                            st.write("Prix : :orange[Sur devis / Non défini]")
+
                         score_val = res.get('score', 0.0)
 
                         if np.isnan(score_val):
