@@ -100,7 +100,7 @@ def run_search(processed_image):
 st.title("👟 JOLIESSE IA - Système de Détection")
 
 # Menu de navigation
-menu = st.sidebar.radio("Menu", ["🔍 Recherche", "📦 Catalogue"])
+menu = st.sidebar.radio("Menu", ["🔍 Recherche", "📦 Catalogue", "🔐 Administration"])
 
 if menu == "🔍 Recherche":
     uploaded_file = st.file_uploader("Charger une photo de chaussure", type=['jpg', 'jpeg', 'png'])
@@ -195,7 +195,7 @@ if menu == "🔍 Recherche":
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
 
-elif menu == "📦 Catalogue":
+if menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
     search_ref = st.text_input("🔍 Rechercher par référence", placeholder="Ex: 4414")
     
@@ -255,3 +255,78 @@ elif menu == "📦 Catalogue":
                 
     except Exception as e:
         st.error(f"Impossible de charger le catalogue : {e}")
+
+elif menu == "🔐 Administration":
+    st.subheader("Gestion du Catalogue & Indexation IA")
+    
+    # --- PROTECTION PAR MOT DE PASSE ---
+    if "admin_authenticated" not in st.session_state:
+        st.session_state["admin_authenticated"] = False
+
+    if not st.session_state["admin_authenticated"]:
+        pwd = st.text_input("Code d'accès sécurisé", type="password")
+        if st.button("Se connecter"):
+            # Remplace 'joliesse2026' par le code de ton choix ou st.secrets
+            if pwd == "joliesse2026": 
+                st.session_state["admin_authenticated"] = True
+                st.rerun()
+            else:
+                st.error("Accès refusé.")
+    else:
+        # --- DASHBOARD ADMIN ACTIF ---
+        if st.button("Se déconnecter"):
+            st.session_state["admin_authenticated"] = False
+            st.rerun()
+
+        st.divider()
+        
+        with st.form("add_product_form", clear_on_submit=True):
+            st.write("### 📤 Ajouter / Mettre à jour un article")
+            c1, c2 = st.columns(2)
+            with c1:
+                new_ref = st.text_input("Référence (ex: 4420)")
+                new_price = st.number_input("Prix (DT)", min_value=0.0, step=0.5)
+            with c2:
+                new_color = st.text_input("Couleur (ex: Noir Verni)")
+                new_file = st.file_uploader("Image du produit", type=['jpg', 'jpeg', 'png'])
+
+            submitted = st.form_submit_button("VALIDER ET INDEXER")
+
+            if submitted:
+                if not new_ref or not new_file:
+                    st.error("La référence et l'image sont obligatoires.")
+                else:
+                    try:
+                        # 1. Préparation Image & Embedding
+                        image = Image.open(new_file).convert("RGB")
+                        with st.spinner("L'IA génère l'empreinte visuelle..."):
+                            emb = model.encode(image).tolist()
+                        
+                        # 2. Nom de l'image (pour éviter les doublons storage)
+                        import time
+                        file_ext = new_file.name.split('.')[-1]
+                        storage_name = f"{new_ref}_{int(time.time())}.{file_ext}"
+
+                        # 3. Connexion et Requête UPSERT (Update or Insert)
+                        conn = pg8000.connect(**DB_CONFIG)
+                        cur = conn.cursor()
+                        
+                        sql = """
+                            INSERT INTO products (product_ref, price, colors, image_paths, embedding)
+                            VALUES (%s, %s, %s, %s, %s)
+                            ON CONFLICT (product_ref) 
+                            DO UPDATE SET 
+                                price = EXCLUDED.price,
+                                colors = EXCLUDED.colors,
+                                image_paths = EXCLUDED.image_paths,
+                                embedding = EXCLUDED.embedding;
+                        """
+                        cur.execute(sql, (new_ref, new_price, new_color, storage_name, str(emb)))
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        st.success(f"✅ Article {new_ref} indexé ! (L'image doit être uploadée sur Supabase Storage en parallèle)")
+                        
+                    except Exception as e:
+                        st.error(f"Erreur technique : {e}")    
