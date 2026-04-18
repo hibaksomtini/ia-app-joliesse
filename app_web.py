@@ -10,6 +10,7 @@ import warnings
 from supabase import create_client, Client
 import io
 import time
+import pandas as pd
 warnings.filterwarnings("ignore", category=UserWarning)
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
@@ -205,7 +206,7 @@ if menu == "🔍 Recherche":
                 st.write("Aidez-nous à améliorer le catalogue Joliesse.")
     
                 with st.form("feedback_form", clear_on_submit=True):
-                    reason = st.selectbox("Type de message :", [
+                    type_msg = st.selectbox("Type de message :", [
                         "🔍 Article non trouvé (Lancer l'ajout)", 
                         "⚠️ Erreur d'information (Prix/Couleur)", 
                         "💡 Suggestion d'amélioration"
@@ -216,26 +217,44 @@ if menu == "🔍 Recherche":
                     # Optionnel : permettre d'envoyer l'image qui a posé problème
                     feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
         
-                    if st.form_submit_button("ENVOYER À L'ADMIN"):
-                        try:
-                            # 1. Préparation des données
-                            msg_ref = f"FEEDBACK_{int(time.time())}"
+                    if st.form_submit_button("ENVOYER LE SIGNALEMENT"):
+                        if user_comment:
+                            try:
+                                file_name = None
+            
+                                # --- 1. SI UNE IMAGE EST JOINTE ---
+                                if feedback_img:
+                                    import time
+                                    # Nom unique pour le feedback (ex: fb_4420_1713456000.jpg)
+                                    file_ext = feedback_img.name.split('.')[-1]
+                                    file_name = f"fb_{int(time.time())}.{file_ext}"
                 
-                            # 2. Sauvegarde dans une table SQL 'feedbacks'
-                            # (Assure-toi de créer cette table dans Supabase au préalable)
-                            conn = pg8000.connect(**DB_CONFIG)
-                            cur = conn.cursor()
-                
-                            sql = "INSERT INTO feedbacks (type_message, commentaire, status) VALUES (%s, %s, %s)"
-                            cur.execute(sql, (reason, user_comment, "Nouveau"))
-                
-                            conn.commit()
-                            conn.close()
-                
-                            st.success("Merci ! Votre message a été transmis à l'équipe Joliesse.")
-                
-                        except Exception as e:
-                            st.error("Erreur lors de l'envoi du message.")  
+                                    # Upload vers un dossier 'feedbacks' dans votre bucket
+                                    with st.spinner("Envoi de l'image..."):
+                                        feedback_img.seek(0)
+                                        supabase.storage.from_("catalogue").upload(
+                                            path=f"feedbacks/{file_name}",
+                                            file=feedback_img.read(),
+                                            file_options={"content-type": f"image/{file_ext}"}
+                                        )
+
+                                # --- 2. INSERTION DANS LA TABLE SQL ---
+                                conn = pg8000.connect(**DB_CONFIG)
+                                cur = conn.cursor()
+            
+                                # On ajoute 'attachment_path' à la requête
+                                sql = """
+                                    INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) 
+                                    VALUES (%s, %s, %s, %s)
+                                """
+                                cur.execute(sql, (type_msg, user_comment, "Nouveau", file_name))
+            
+                                conn.commit()
+                                conn.close()
+                                st.success("✅ Signalement envoyé avec succès !")
+            
+                            except Exception as e:
+                                st.error(f"Erreur lors de l'envoi : {e}")  
 if menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
     search_ref = st.text_input("🔍 Rechercher par référence", placeholder="Ex: 4414")
@@ -314,95 +333,98 @@ elif menu == "🔐 Administration":
             else:
                 st.error("Accès refusé.")
     else:
-        # --- DASHBOARD ADMIN ACTIF ---
-        if st.button("Se déconnecter"):
-            st.session_state["admin_authenticated"] = False
-            st.rerun()
+        # --- DASHBOARD ADMIN ---
+        col1, col2 = st.columns([0.8, 0.2])
+        with col1:
+            st.success("Mode Administrateur Activé")
+        with col2:
+            if st.button("Se déconnecter"):
+                st.session_state["admin_authenticated"] = False
+                st.rerun()
 
         st.divider()
+
+        # --- BLOC 1 : AFFICHAGE DES MESSAGES (FEEDBACKS) ---
+        st.write("### 📩 Messages et Alertes")
+        try:
+            conn = pg8000.connect(**DB_CONFIG)
+            # On lit les messages directement
+            df_fb = pd.read_sql("SELECT id, created_at, type_message, commentaire, status, attachment_path FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC", conn)
         
-        # Dans votre bloc "Administration"
-        with st.form("admin_smart_upload", clear_on_submit=True):
-            # À ajouter dans ton bloc Administration
-            st.write("### 📩 Messages et Alertes")
-            try:
-                conn = pg8000.connect(**DB_CONFIG)
-                # On récupère les feedbacks non traités
-                df_fb = pd.read_sql("SELECT * FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC", conn)
-                conn.close()
+            if not df_fb.empty:
+                st.dataframe(df_fb, use_container_width=True, hide_index=True)
+            
+                if st.button("Marquer ces messages comme 'Lus'"):
+                    cur = conn.cursor()
+                    cur.execute("UPDATE feedbacks SET status = 'Lu' WHERE status = 'Nouveau'")
+                    conn.commit()
+                    st.success("Messages archivés !")
+                    time.sleep(1)
+                    st.rerun()
+            else:
+                st.info("Aucun nouveau message.")
+            conn.close()
+        except Exception as e:
+            st.info("La table des messages est vide ou en attente.")
+
+        st.divider()
+
+        # --- BLOC 2 : IMPORTATION D'ARTICLES (STOCKS) ---
+        st.write("### 🗃️ Gestion Intelligente du Stock")
     
-                if not df_fb.empty:
-                    st.dataframe(df_fb)
-                    if st.button("Marquer tout comme lu"):
-                        # Logique SQL pour UPDATE status = 'Lu'
-                        pass
-                else:
-                    st.info("Aucun nouveau message.")
-            except:
-                st.write("Aucun message pour le moment.")
-            st.write("### 🗃️ Gestion Intelligente du Stock")
+        # On utilise un formulaire pour l'envoi
+        with st.form("admin_smart_upload", clear_on_submit=True):
             new_ref = st.text_input("Référence de l'article (ex: 4420)")
             new_file = st.file_uploader("Ajouter une image", type=['jpg', 'jpeg', 'png'])
-    
-            if st.form_submit_button("LANCER L'INDEXATION"):
-                if new_ref and new_file:
-                    try:
-                        # 1. PRÉPARATION DE L'IMAGE & EMBEDDING
-                        image = Image.open(new_file).convert("RGB")
-                        with st.spinner("Analyse CLIP..."):
-                            embedding = model.encode(image).tolist()
+        
+            # Le bouton qui déclenche tout
+            submitted = st.form_submit_button("LANCER L'INDEXATION")
+
+        # On traite les données SEULEMENT si le formulaire est soumis
+        if submitted:
+            if new_ref and new_file:
+                try:
+                    # 1. Image & Embedding
+                    image = Image.open(new_file).convert("RGB")
+                    with st.spinner("Analyse CLIP..."):
+                        embedding = model.encode(image).tolist()
                 
-                        # 2. RENOMMAGE SÉCURISÉ (Anti-doublon Storage)
-                        file_ext = new_file.name.split('.')[-1]
-                        new_file_name = f"{new_ref}_{int(time.time())}.{file_ext}"
+                    # 2. Nom de fichier unique
+                    file_ext = new_file.name.split('.')[-1]
+                    new_file_name = f"{new_ref}_{int(time.time())}.{file_ext}"
 
-                        # 3. COMPRESSION MÉMOIRE (Pour la rapidité à Sfax)
-                        buffer = io.BytesIO()
-                        image.save(buffer, format="JPEG", quality=85)
-                        buffer.seek(0)
+                    # 3. Préparation Buffer
+                    buffer = io.BytesIO()
+                    image.save(buffer, format="JPEG", quality=85)
+                    buffer_data = buffer.getvalue()
 
-                        # 4. CONNEXION DB POUR VÉRIFICATION
-                        conn = pg8000.connect(**DB_CONFIG)
-                        cur = conn.cursor()
+                    # 4. SQL UPSERT
+                    conn = pg8000.connect(**DB_CONFIG)
+                    cur = conn.cursor()
+                    cur.execute("SELECT image_paths FROM products WHERE product_ref = %s", (new_ref,))
+                    row = cur.fetchone()
 
-                        # On vérifie si la référence existe déjà
-                        cur.execute("SELECT image_paths FROM products WHERE product_ref = %s", (new_ref,))
-                        row = cur.fetchone()
+                    if row:
+                        current_paths = row[0] if row[0] else ""
+                        updated_paths = f"{current_paths}, {new_file_name}" if current_paths else new_file_name
+                        sql = "UPDATE products SET image_paths = %s, embedding = %s WHERE product_ref = %s"
+                        cur.execute(sql, (updated_paths, str(embedding), new_ref))
+                    else:
+                        sql = "INSERT INTO products (product_ref, image_paths, embedding) VALUES (%s, %s, %s)"
+                        cur.execute(sql, (new_ref, new_file_name, str(embedding)))
 
-                        if row:
-                            # CAS : LA RÉFÉRENCE EXISTE -> On ajoute l'image à la liste existante
-                            current_paths = row[0] if row[0] else ""
-                            updated_paths = f"{current_paths}, {new_file_name}" if current_paths else new_file_name
-                    
-                            sql = """
-                                UPDATE products 
-                                SET image_paths = %s, embedding = %s 
-                                WHERE product_ref = %s
-                            """
-                            cur.execute(sql, (updated_paths, str(embedding), new_ref))
-                            action_msg = f"Référence {new_ref} mise à jour avec une nouvelle image."
-                        else:
-                            # CAS : NOUVELLE RÉFÉRENCE -> Création
-                            sql = """
-                                INSERT INTO products (product_ref, image_paths, embedding) 
-                                VALUES (%s, %s, %s)
-                            """
-                            cur.execute(sql, (new_ref, new_file_name, str(embedding)))
-                            action_msg = f"Nouvelle référence {new_ref} créée avec succès."
+                    # 5. Storage Supabase (Bypass RLS grâce à ta service_role key)
+                    supabase.storage.from_("catalogue").upload(
+                        path=new_file_name,
+                        file=buffer_data,
+                        file_options={"content-type": "image/jpeg"}
+                    )
 
-                        # 5. UPLOAD PHYSIQUE VERS SUPABASE STORAGE
-                        with st.spinner("Upload vers le Cloud..."):
-                            supabase.storage.from_("catalogue").upload(
-                                path=new_file_name,
-                                file=buffer.getvalue(),
-                                file_options={"content-type": "image/jpeg"}
-                            )
+                    conn.commit()
+                    conn.close()
+                    st.success(f"✅ Article {new_ref} traité avec succès !")
 
-                        conn.commit()
-                        conn.close()
-                        st.success(f"✅ {action_msg}")
-
-                    except Exception as e:
-                        st.error(f"Erreur : {e}")
-                else:
-                    st.warning("Veuillez remplir tous les champs.")
+                except Exception as e:
+                    st.error(f"Erreur technique : {e}")
+            else:
+                st.warning("Veuillez remplir la référence ET choisir une image.")
