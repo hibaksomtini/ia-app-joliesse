@@ -106,6 +106,13 @@ if menu == "🔍 Recherche":
     uploaded_file = st.file_uploader("Charger une photo de chaussure", type=['jpg', 'jpeg', 'png'])
     
     if uploaded_file:
+        # --- MÉCANISME DE RÉINITIALISATION ---
+        # On vérifie si c'est une nouvelle image par rapport à la dernière traitée
+        if "last_uploaded_file" not in st.session_state or st.session_state["last_uploaded_file"] != uploaded_file.name:
+            st.session_state["last_uploaded_file"] = uploaded_file.name
+            # On efface les anciens résultats pour forcer une nouvelle analyse
+            if 'results' in st.session_state:
+                del st.session_state['results']
         img = Image.open(uploaded_file)
     
         # Création de deux onglets
