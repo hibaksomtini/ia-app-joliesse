@@ -226,7 +226,7 @@ if menu == "🔍 Recherche":
                             conn = pg8000.connect(**DB_CONFIG)
                             cur = conn.cursor()
                 
-                            sql = "INSERT INTO feedbacks (type, comment, status) VALUES (%s, %s, %s)"
+                            sql = "INSERT INTO feedbacks (type_message, commentaire, status) VALUES (%s, %s, %s)"
                             cur.execute(sql, (reason, user_comment, "Nouveau"))
                 
                             conn.commit()
