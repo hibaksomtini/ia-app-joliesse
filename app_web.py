@@ -7,6 +7,9 @@ import requests
 from io import BytesIO
 from streamlit_cropper import st_cropper
 import warnings
+from supabase import create_client, Client
+import io
+import time
 warnings.filterwarnings("ignore", category=UserWarning)
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
@@ -20,6 +23,10 @@ DB_CONFIG = {
     "port": 6543
 }
 STORAGE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co/storage/v1/object/public/catalogue/"
+
+SUPABASE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co"
+SUPABASE_KEY = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- CHARGEMENT DU MODÈLE IA ---
 @st.cache_resource
@@ -280,53 +287,71 @@ elif menu == "🔐 Administration":
 
         st.divider()
         
-        with st.form("add_product_form", clear_on_submit=True):
-            st.write("### 📤 Ajouter / Mettre à jour un article")
-            c1, c2 = st.columns(2)
-            with c1:
-                new_ref = st.text_input("Référence (ex: 4420)")
-                new_price = st.number_input("Prix (DT)", min_value=0.0, step=0.5)
-            with c2:
-                new_color = st.text_input("Couleur (ex: Noir Verni)")
-                new_file = st.file_uploader("Image du produit", type=['jpg', 'jpeg', 'png'])
+        # Dans votre bloc "Administration"
+with st.form("admin_smart_upload", clear_on_submit=True):
+    st.write("### 🗃️ Gestion Intelligente du Stock")
+    new_ref = st.text_input("Référence de l'article (ex: 4420)")
+    new_file = st.file_uploader("Ajouter une image", type=['jpg', 'jpeg', 'png'])
+    
+    if st.form_submit_button("LANCER L'INDEXATION"):
+        if new_ref and new_file:
+            try:
+                # 1. PRÉPARATION DE L'IMAGE & EMBEDDING
+                image = Image.open(new_file).convert("RGB")
+                with st.spinner("Analyse CLIP..."):
+                    embedding = model.encode(image).tolist()
+                
+                # 2. RENOMMAGE SÉCURISÉ (Anti-doublon Storage)
+                file_ext = new_file.name.split('.')[-1]
+                new_file_name = f"{new_ref}_{int(time.time())}.{file_ext}"
 
-            submitted = st.form_submit_button("VALIDER ET INDEXER")
+                # 3. COMPRESSION MÉMOIRE (Pour la rapidité à Sfax)
+                buffer = io.BytesIO()
+                image.save(buffer, format="JPEG", quality=85)
+                buffer.seek(0)
 
-            if submitted:
-                if not new_ref or not new_file:
-                    st.error("La référence et l'image sont obligatoires.")
+                # 4. CONNEXION DB POUR VÉRIFICATION
+                conn = pg8000.connect(**DB_CONFIG)
+                cur = conn.cursor()
+
+                # On vérifie si la référence existe déjà
+                cur.execute("SELECT image_paths FROM products WHERE product_ref = %s", (new_ref,))
+                row = cur.fetchone()
+
+                if row:
+                    # CAS : LA RÉFÉRENCE EXISTE -> On ajoute l'image à la liste existante
+                    current_paths = row[0] if row[0] else ""
+                    updated_paths = f"{current_paths}, {new_file_name}" if current_paths else new_file_name
+                    
+                    sql = """
+                        UPDATE products 
+                        SET image_paths = %s, embedding = %s 
+                        WHERE product_ref = %s
+                    """
+                    cur.execute(sql, (updated_paths, str(embedding), new_ref))
+                    action_msg = f"Référence {new_ref} mise à jour avec une nouvelle image."
                 else:
-                    try:
-                        # 1. Préparation Image & Embedding
-                        image = Image.open(new_file).convert("RGB")
-                        with st.spinner("L'IA génère l'empreinte visuelle..."):
-                            emb = model.encode(image).tolist()
-                        
-                        # 2. Nom de l'image (pour éviter les doublons storage)
-                        import time
-                        file_ext = new_file.name.split('.')[-1]
-                        storage_name = f"{new_ref}_{int(time.time())}.{file_ext}"
+                    # CAS : NOUVELLE RÉFÉRENCE -> Création
+                    sql = """
+                        INSERT INTO products (product_ref, image_paths, embedding) 
+                        VALUES (%s, %s, %s)
+                    """
+                    cur.execute(sql, (new_ref, new_file_name, str(embedding)))
+                    action_msg = f"Nouvelle référence {new_ref} créée avec succès."
 
-                        # 3. Connexion et Requête UPSERT (Update or Insert)
-                        conn = pg8000.connect(**DB_CONFIG)
-                        cur = conn.cursor()
-                        
-                        sql = """
-                            INSERT INTO products (product_ref, price, colors, image_paths, embedding)
-                            VALUES (%s, %s, %s, %s, %s)
-                            ON CONFLICT (product_ref) 
-                            DO UPDATE SET 
-                                price = EXCLUDED.price,
-                                colors = EXCLUDED.colors,
-                                image_paths = EXCLUDED.image_paths,
-                                embedding = EXCLUDED.embedding;
-                        """
-                        cur.execute(sql, (new_ref, new_price, new_color, storage_name, str(emb)))
-                        
-                        conn.commit()
-                        conn.close()
-                        
-                        st.success(f"✅ Article {new_ref} indexé ! (L'image doit être uploadée sur Supabase Storage en parallèle)")
-                        
-                    except Exception as e:
-                        st.error(f"Erreur technique : {e}")    
+                # 5. UPLOAD PHYSIQUE VERS SUPABASE STORAGE
+                with st.spinner("Upload vers le Cloud..."):
+                    supabase.storage.from_("catalogue").upload(
+                        path=new_file_name,
+                        file=buffer.getvalue(),
+                        file_options={"content-type": "image/jpeg"}
+                    )
+
+                conn.commit()
+                conn.close()
+                st.success(f"✅ {action_msg}")
+
+            except Exception as e:
+                st.error(f"Erreur : {e}")
+        else:
+            st.warning("Veuillez remplir tous les champs.")
