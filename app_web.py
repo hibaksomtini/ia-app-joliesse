@@ -126,31 +126,38 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            st.info("📷 Touchez l'image pour activer le cadre rouge.")
+            st.info("Ajustez le cadre sur la chaussure. L'image est affichée en taille réelle pour plus de précision.")
             
-            # On augmente un peu la taille pour mieux voir
-            img_resize = img.copy().convert("RGB")
-            img_resize.thumbnail((800, 800)) 
+            # 1. On garde une taille confortable pour le web mais sans trop réduire
+            # 1000px permet de voir tous les détails sur mobile et PC
+            img_display = img.copy().convert("RGB")
+            img_display.thumbnail((1000, 1000)) 
 
             try:
-                # Appel épuré du cropper
-                # On enlève 'should_resize_image' s'il pose encore problème
+                # 2. Utilisation de st_cropper en mode 'libre'
+                # On ne met pas d'aspect_ratio pour que le cadre soit totalement libre
                 cropped_img = st_cropper(
-                    img_resize,
+                    img_display,
                     realtime_update=True,
                     box_color='#FF0000',
-                    aspect_ratio=None,
-                    key=f"cropper_v_{uploaded_file.name}"
+                    aspect_ratio=None, 
+                    key=f"cropper_full_{uploaded_file.name}",
+                    # On retire les limitations de redimensionnement pour laisser l'image respirer
                 )
                 
                 if cropped_img:
-                    st.write("✅ **Aperçu du recadrage :**")
-                    # On force l'aperçu à être visible
-                    st.image(cropped_img, width=250)
+                    st.write("---")
+                    col_preview, col_btn = st.columns([1, 2])
+                    
+                    with col_preview:
+                        st.write("🔍 **Zone à scanner :**")
+                        st.image(cropped_img, use_container_width=True)
 
-                    if st.button("LANCER L'ANALYSE DE LA SÉLECTION", type="primary", key="btn_crop_final"):
-                        with st.spinner("Recherche Joliesse..."):
-                            st.session_state['results'] = run_search(cropped_img)
+                    with col_btn:
+                        st.write("⚡ **Action**")
+                        if st.button("LANCER L'ANALYSE", type="primary", key="btn_crop_final"):
+                            with st.spinner("Recherche Joliesse..."):
+                                st.session_state['results'] = run_search(cropped_img)
             
             except Exception as e:
                 st.error(f"Erreur d'affichage : {e}")
