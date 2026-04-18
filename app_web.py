@@ -45,6 +45,7 @@ def run_search(processed_image):
         conn.close()
 
         results = []
+        st.write(f"Vérification de {len(rows)} produits...")
         for row in rows:
             # Sécurité 1 : Structure de la ligne
             if len(row) < 5:
@@ -54,29 +55,35 @@ def run_search(processed_image):
 
             # Sécurité 2 : On ignore si l'embedding est absent
             if db_emb is None:
+                print(f"Skipping {ref}: Embedding is None")
                 continue 
 
             try:
+                if isinstance(db_emb, str):
+                    import json
+                    db_emb = json.loads(db_emb.replace("'", '"'))
+
                 db_vec = np.array(db_emb).flatten()
                 
                 # Sécurité 3 : Taille du vecteur CLIP (768)
                 if db_vec.shape[0] != 768 or np.all(db_vec == 0):
+                    print(f"Dimension mismatch for {ref}: {db_vec.shape[0]}")
                     continue
 
                 # CALCUL DE SIMILARITÉ
                 score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
                 
+                print(f"Ref: {ref} | Score: {score:.4f}")
+
                 # Formatage des images
-                img_list = str(img_data).split('|') if img_data else []
-                print(f"Comparaison avec {ref} : Score = {score}") # Regarde dans les logs Streamlit
-                results.append({
-                    "ref": ref, 
-                    "score": float(score), 
-                    "price": price if price is not None else 0.0, 
-                    "images": img_list,
-                    "colors": colors if colors and colors != "None" else "Non spécifié"
-                })
-            except Exception:
+                if score > 0.1: 
+                    img_list = str(img_data).split('|') if img_data else []
+                    results.append({
+                        "ref": ref, "score": float(score), "price": price, 
+                        "images": img_list, "colors": colors
+                    })
+            except Exception as e:
+                print(f"Error processing {ref}: {e}")
                 continue
 
         # Tri par meilleur score et limitation aux 10 meilleurs
