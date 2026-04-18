@@ -107,60 +107,55 @@ if menu == "🔍 Recherche":
     
     if uploaded_file:
         # --- MÉCANISME DE RÉINITIALISATION ---
-        # On vérifie si c'est une nouvelle image par rapport à la dernière traitée
         if "last_uploaded_file" not in st.session_state or st.session_state["last_uploaded_file"] != uploaded_file.name:
             st.session_state["last_uploaded_file"] = uploaded_file.name
-            # On efface les anciens résultats pour forcer une nouvelle analyse
             if 'results' in st.session_state:
                 del st.session_state['results']
+        
         img = Image.open(uploaded_file)
     
-        # Création de deux onglets
-        tab_direct, tab_crop = st.tabs(["🚀 Scan Direct", "✂️ Recadrage Manuel"])
+        # --- REMPLACEMENT DES ONGLETS PAR UN BOUTON RADIO ---
+        # Cela force Streamlit à afficher le cropper sur une page propre
+        mode = st.radio("Méthode d'analyse :", ["🚀 Scan Direct (Image entière)", "✂️ Recadrage Précis"], horizontal=True)
 
-        with tab_direct:
-            st.info("L'IA analyse l'image entière. Idéal pour une photo centrée.")
-            st.image(img, width='stretch')
+        if mode == "🚀 Scan Direct (Image entière)":
+            st.info("L'IA analyse l'image entière.")
+            st.image(img, use_container_width=True)
             if st.button("LANCER LE SCAN DIRECT", type="primary", key="btn_direct"):
                 with st.spinner("Analyse globale..."):
                     st.session_state['results'] = run_search(img)
 
-        with tab_crop:
-            st.info("Ajustez le cadre sur la chaussure. L'image est affichée en taille réelle pour plus de précision.")
+        else:
+            st.warning("💡 Touchez l'image ci-dessous pour activer le cadre rouge.")
             
-            # 1. On garde une taille confortable pour le web mais sans trop réduire
-            # 1000px permet de voir tous les détails sur mobile et PC
+            # Préparation de l'image pour le cropper
             img_display = img.copy().convert("RGB")
             img_display.thumbnail((1000, 1000)) 
 
             try:
-                # 2. Utilisation de st_cropper en mode 'libre'
-                # On ne met pas d'aspect_ratio pour que le cadre soit totalement libre
+                # Appel du cropper hors des onglets pour éviter les bugs de rendu
                 cropped_img = st_cropper(
                     img_display,
                     realtime_update=True,
                     box_color='#FF0000',
-                    aspect_ratio=None, 
-                    key=f"cropper_full_{uploaded_file.name}",
-                    # On retire les limitations de redimensionnement pour laisser l'image respirer
+                    aspect_ratio=None,
+                    key=f"cropper_stable_{uploaded_file.name}"
                 )
                 
                 if cropped_img:
-                    st.write("---")
-                    col_preview, col_btn = st.columns([1, 2])
-                    
-                    with col_preview:
-                        st.write("🔍 **Zone à scanner :**")
-                        st.image(cropped_img, use_container_width=True)
-
-                    with col_btn:
-                        st.write("⚡ **Action**")
-                        if st.button("LANCER L'ANALYSE", type="primary", key="btn_crop_final"):
+                    st.divider()
+                    col_pre, col_act = st.columns([1, 1])
+                    with col_pre:
+                        st.write("🔍 **Aperçu du recadrage :**")
+                        st.image(cropped_img, width=200)
+                    with col_act:
+                        st.write("⚡ **Action :**")
+                        if st.button("LANCER L'ANALYSE DE LA ZONE", type="primary", key="btn_crop_final"):
                             with st.spinner("Recherche Joliesse..."):
                                 st.session_state['results'] = run_search(cropped_img)
             
             except Exception as e:
-                st.error(f"Erreur d'affichage : {e}")
+                st.error(f"Le widget de recadrage ne répond pas : {e}")
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
