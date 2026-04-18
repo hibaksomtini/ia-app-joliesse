@@ -126,35 +126,34 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            # On crée une clé unique par image pour forcer le reset seulement quand on change de fichier
-            # Mais on garde la même clé tant qu'on travaille sur la même image
-            cropper_key = f"cropper_{uploaded_file.name}"
-
-            # On prépare l'image
-            img_for_crop = img.copy().convert("RGB")
-            img_for_crop.thumbnail((600, 600)) 
-
-            # APPEL DU CROPPER
-            # realtime_update=True est important pour garder le cadre visible
-            cropped_img = st_cropper(
-                    img_for_crop, 
-                    realtime_update=True, 
-                    box_color='#FF0000', 
-                    aspect_ratio=None, 
-                    key=cropper_key,
-                    should_resize_image=True
-                )
+            st.info("📷 Touchez l'image pour activer le cadre rouge.")
             
-            if cropped_img:
-                st.write("✅ **Zone sélectionnée :**")
-                # On réduit l'aperçu pour ne pas encombrer l'écran
-                st.image(cropped_img, width=150)
+            # On augmente un peu la taille pour mieux voir
+            img_resize = img.copy().convert("RGB")
+            img_resize.thumbnail((800, 800)) 
 
-                # Utilisation d'un bouton avec une clé stable
-                if st.button("LANCER L'ANALYSE DE LA SÉLECTION", type="primary", key="run_crop_analysis"):
-                    with st.spinner("Analyse en cours..."):
-                        # On lance la recherche et on stocke dans le session_state
-                        st.session_state['results'] = run_search(cropped_img)
+            try:
+                # Appel épuré du cropper
+                # On enlève 'should_resize_image' s'il pose encore problème
+                cropped_img = st_cropper(
+                    img_resize,
+                    realtime_update=True,
+                    box_color='#FF0000',
+                    aspect_ratio=None,
+                    key=f"cropper_v_{uploaded_file.name}"
+                )
+                
+                if cropped_img:
+                    st.write("✅ **Aperçu du recadrage :**")
+                    # On force l'aperçu à être visible
+                    st.image(cropped_img, width=250)
+
+                    if st.button("LANCER L'ANALYSE DE LA SÉLECTION", type="primary", key="btn_crop_final"):
+                        with st.spinner("Recherche Joliesse..."):
+                            st.session_state['results'] = run_search(cropped_img)
+            
+            except Exception as e:
+                st.error(f"Erreur d'affichage : {e}")
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
