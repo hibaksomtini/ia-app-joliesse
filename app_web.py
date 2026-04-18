@@ -201,7 +201,41 @@ if menu == "🔍 Recherche":
                         # Barre de progression pour le score de match
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
-
+            with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
+                st.write("Aidez-nous à améliorer le catalogue Joliesse.")
+    
+                with st.form("feedback_form", clear_on_submit=True):
+                    reason = st.selectbox("Type de message :", [
+                        "🔍 Article non trouvé (Lancer l'ajout)", 
+                        "⚠️ Erreur d'information (Prix/Couleur)", 
+                        "💡 Suggestion d'amélioration"
+                    ])
+        
+                    user_comment = st.text_area("Détails (référence manquante, erreur constatée...)")
+        
+                    # Optionnel : permettre d'envoyer l'image qui a posé problème
+                    feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
+        
+                    if st.form_submit_button("ENVOYER À L'ADMIN"):
+                        try:
+                            # 1. Préparation des données
+                            msg_ref = f"FEEDBACK_{int(time.time())}"
+                
+                            # 2. Sauvegarde dans une table SQL 'feedbacks'
+                            # (Assure-toi de créer cette table dans Supabase au préalable)
+                            conn = pg8000.connect(**DB_CONFIG)
+                            cur = conn.cursor()
+                
+                            sql = "INSERT INTO feedbacks (type, comment, status) VALUES (%s, %s, %s)"
+                            cur.execute(sql, (reason, user_comment, "Nouveau"))
+                
+                            conn.commit()
+                            conn.close()
+                
+                            st.success("Merci ! Votre message a été transmis à l'équipe Joliesse.")
+                
+                        except Exception as e:
+                            st.error("Erreur lors de l'envoi du message.")  
 if menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
     search_ref = st.text_input("🔍 Rechercher par référence", placeholder="Ex: 4414")
@@ -289,6 +323,23 @@ elif menu == "🔐 Administration":
         
         # Dans votre bloc "Administration"
         with st.form("admin_smart_upload", clear_on_submit=True):
+            # À ajouter dans ton bloc Administration
+            st.write("### 📩 Messages et Alertes")
+            try:
+                conn = pg8000.connect(**DB_CONFIG)
+                # On récupère les feedbacks non traités
+                df_fb = pd.read_sql("SELECT * FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC", conn)
+                conn.close()
+    
+                if not df_fb.empty:
+                    st.dataframe(df_fb)
+                    if st.button("Marquer tout comme lu"):
+                        # Logique SQL pour UPDATE status = 'Lu'
+                        pass
+                else:
+                    st.info("Aucun nouveau message.")
+            except:
+                st.write("Aucun message pour le moment.")
             st.write("### 🗃️ Gestion Intelligente du Stock")
             new_ref = st.text_input("Référence de l'article (ex: 4420)")
             new_file = st.file_uploader("Ajouter une image", type=['jpg', 'jpeg', 'png'])
