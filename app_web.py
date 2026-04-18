@@ -119,12 +119,32 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            st.info("Ajustez le cadre rouge sur la chaussure précise.")
-            # Utilisation de st_cropper
-            cropped_img = st_cropper(img, realtime_update=True, box_color='#FF0000', aspect_ratio=None, key="cropper_manual")
-            if st.button("SCANNER LA SÉLECTION", type="primary", key="btn_crop"):
-                with st.spinner("Analyse de la zone..."):
-                    st.session_state['results'] = run_search(cropped_img)
+            st.info("💡 Si l'image ne s'affiche pas, attendez 2 secondes ou réduisez la zone.")
+            
+            # OPTIMISATION : On réduit la taille de l'image juste pour l'affichage du crop
+            # pour éviter que le navigateur ne bloque
+            img_display = img.copy()
+            img_display.thumbnail((800, 800)) 
+
+            # Affichage du cropper avec des paramètres de secours
+            cropped_img = st_cropper(
+                img_display, 
+                realtime_update=True, 
+                box_color='#FF0000', 
+                aspect_ratio=None, 
+                key="cropper_v3",
+                should_resize_canvas=True,
+                use_container_width=True # Force l'image à prendre toute la largeur
+            )
+            
+            if cropped_img:
+                st.subheader("Aperçu du recadrage")
+                st.image(cropped_img, width=200)
+
+                if st.button("LANCER L'ANALYSE", type="primary", key="btn_do_crop"):
+                    with st.spinner("Analyse en cours..."):
+                        # On utilise l'image cropée pour la recherche
+                        st.session_state['results'] = run_search(cropped_img)
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
@@ -153,7 +173,7 @@ if menu == "🔍 Recherche":
                         if current_price is not None and float(current_price) > 0:
                             st.write(f"Prix : :green[{float(current_price):.2f} DT]")
                         else:
-                            st.write("Prix : :orange[Sur devis / Non défini]")
+                            st.write("Prix : :orange[Non défini]")
 
                         score_val = res.get('score', 0.0)
 
