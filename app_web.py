@@ -137,13 +137,13 @@ if menu == "🔍 Recherche":
             # APPEL DU CROPPER
             # realtime_update=True est important pour garder le cadre visible
             cropped_img = st_cropper(
-                img_for_crop, 
-                realtime_update=True, 
-                box_color='#FF0000', 
-                aspect_ratio=None, 
-                key=cropper_key,
-                should_resize_canvas=True
-            )
+                    img_for_crop, 
+                    realtime_update=True, 
+                    box_color='#FF0000', 
+                    aspect_ratio=None, 
+                    key=cropper_key,
+                    should_resize_image=True
+                )
             
             if cropped_img:
                 st.write("✅ **Zone sélectionnée :**")
