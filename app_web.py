@@ -119,32 +119,34 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            st.info("💡 Touchez l'image pour déplacer le cadre rouge.")
+            st.info("💡 Si le cadre ne s'affiche pas, touchez l'image ou passez en 'Version pour ordinateur'.")
             
-            # On redimensionne légèrement pour ne pas saturer la mémoire du téléphone
-            img_resize = img.copy()
-            img_resize.thumbnail((700, 700))
+            # Préparation propre de l'image
+            img_for_crop = img.copy().convert("RGB")
+            img_for_crop.thumbnail((700, 700))
 
-            # Appel ultra-sécurisé du cropper
-            cropped_img = st_cropper(
-                img_resize,
-                realtime_update=True,
-                box_color='#FF0000', # Le rouge Joliesse
-                aspect_ratio=None,   # Sélection libre
-                key="cropper_final_v5", # Nouvelle clé pour forcer le refresh
-                should_resize_canvas=True
-            )
+            try:
+                # Appel avec uniquement les arguments essentiels
+                # On enlève should_resize_canvas pour voir si c'est lui qui cause le TypeError
+                cropped_img = st_cropper(
+                    img_for_crop, 
+                    realtime_update=True, 
+                    box_color='#FF0000', 
+                    aspect_ratio=None, 
+                    key="cropper_stable_v10" 
+                )
+                
+                if cropped_img:
+                    st.write("Selection prête :")
+                    st.image(cropped_img, width=150)
+
+                    if st.button("LANCER L'ANALYSE", type="primary", key="btn_final_crop"):
+                        with st.spinner("Recherche..."):
+                            st.session_state['results'] = run_search(cropped_img)
             
-            # IMPORTANT : C'est ici que tu vois si le crop fonctionne
-            if cropped_img:
-                st.write("**Aperçu de la zone à scanner :**")
-                st.image(cropped_img, width=150)
-
-                if st.button("LANCER L'ANALYSE", type="primary", key="btn_final_analysis"):
-                    with st.spinner("Recherche dans le catalogue Joliesse..."):
-                        # S'assurer que c'est en RGB pour CLIP
-                        final_crop = cropped_img.convert("RGB")
-                        st.session_state['results'] = run_search(final_crop)
+            except Exception as e:
+                st.error(f"Erreur widget : {e}")
+                st.warning("Le composant de recadrage a un souci technique sur ce navigateur.")
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:

@@ -1,5 +1,4 @@
 streamlit
-streamlit-cropper
 sentence-transformers
 torch
 torchvision
@@ -7,3 +6,4 @@ pg8000
 pillow
 requests
 pgvector
+streamlit-cropper==0.2.2
