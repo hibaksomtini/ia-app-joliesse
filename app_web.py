@@ -119,38 +119,32 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            st.info("💡 Ajustez le cadre rouge. Si l'image ne s'affiche pas, vérifiez la connexion.")
+            st.info("💡 Touchez l'image pour déplacer le cadre rouge.")
             
-            # 1. On prépare l'image pour l'affichage (max 800px pour la fluidité)
-            # On utilise .copy() pour ne pas modifier l'originale
-            img_for_crop = img.copy()
-            img_for_crop.thumbnail((800, 800)) 
+            # On redimensionne légèrement pour ne pas saturer la mémoire du téléphone
+            img_resize = img.copy()
+            img_resize.thumbnail((700, 700))
 
-            try:
-                # 2. Appel du cropper avec des paramètres simplifiés
-                cropped_img = st_cropper(
-                    img_for_crop, 
-                    realtime_update=True, 
-                    box_color='#FF0000', 
-                    aspect_ratio=None, 
-                    key="cropper_final_v1" # On change la clé pour forcer le reset
-                )
-                
-                # 3. Si le cropper renvoie une image, on l'affiche et on propose le bouton
-                if cropped_img:
-                    st.write("Aperçu de la zone à scanner :")
-                    st.image(cropped_img, width=150)
-
-                    if st.button("LANCER L'ANALYSE", type="primary"):
-                        with st.spinner("Analyse en cours..."):
-                            # On s'assure que l'image est en RGB avant l'IA
-                            if cropped_img.mode != 'RGB':
-                                cropped_img = cropped_img.convert('RGB')
-                            st.session_state['results'] = run_search(cropped_img)
+            # Appel ultra-sécurisé du cropper
+            cropped_img = st_cropper(
+                img_resize,
+                realtime_update=True,
+                box_color='#FF0000', # Le rouge Joliesse
+                aspect_ratio=None,   # Sélection libre
+                key="cropper_final_v5", # Nouvelle clé pour forcer le refresh
+                should_resize_canvas=True
+            )
             
-            except Exception as e:
-                st.error(f"Erreur technique avec le recadrage : {e}")
-                st.info("Utilisez le 'Scan Direct' si le recadrage manuel bloque sur ce téléphone.")
+            # IMPORTANT : C'est ici que tu vois si le crop fonctionne
+            if cropped_img:
+                st.write("**Aperçu de la zone à scanner :**")
+                st.image(cropped_img, width=150)
+
+                if st.button("LANCER L'ANALYSE", type="primary", key="btn_final_analysis"):
+                    with st.spinner("Recherche dans le catalogue Joliesse..."):
+                        # S'assurer que c'est en RGB pour CLIP
+                        final_crop = cropped_img.convert("RGB")
+                        st.session_state['results'] = run_search(final_crop)
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
