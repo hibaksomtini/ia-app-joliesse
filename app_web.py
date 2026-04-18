@@ -126,32 +126,35 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            # On utilise le nom du fichier pour créer une clé unique
-            # Cela force le reset du cadre rouge à chaque nouvelle image
-            dynamic_key = f"cropper_{uploaded_file.name}"
+            # On crée une clé unique par image pour forcer le reset seulement quand on change de fichier
+            # Mais on garde la même clé tant qu'on travaille sur la même image
+            cropper_key = f"cropper_{uploaded_file.name}"
 
-            img_for_crop = img.copy()
+            # On prépare l'image
+            img_for_crop = img.copy().convert("RGB")
             img_for_crop.thumbnail((600, 600)) 
 
-            try:
-                cropped_img = st_cropper(
-                    img_for_crop, 
-                    realtime_update=True, 
-                    box_color='#FF0000', 
-                    aspect_ratio=None, 
-                    key=dynamic_key # <--- Changement CRITIQUE ici
-                )
-                
-                if cropped_img:
-                    st.write("✅ Sélection prête")
-                    st.image(cropped_img, width=150)
-
-                    if st.button("LANCER L'ANALYSE", type="primary", key=f"btn_{uploaded_file.name}"):
-                        with st.spinner("Analyse en cours..."):
-                            st.session_state['results'] = run_search(cropped_img)
+            # APPEL DU CROPPER
+            # realtime_update=True est important pour garder le cadre visible
+            cropped_img = st_cropper(
+                img_for_crop, 
+                realtime_update=True, 
+                box_color='#FF0000', 
+                aspect_ratio=None, 
+                key=cropper_key,
+                should_resize_canvas=True
+            )
             
-            except Exception as e:
-                st.error(f"Erreur technique : {e}")
+            if cropped_img:
+                st.write("✅ **Zone sélectionnée :**")
+                # On réduit l'aperçu pour ne pas encombrer l'écran
+                st.image(cropped_img, width=150)
+
+                # Utilisation d'un bouton avec une clé stable
+                if st.button("LANCER L'ANALYSE DE LA SÉLECTION", type="primary", key="run_crop_analysis"):
+                    with st.spinner("Analyse en cours..."):
+                        # On lance la recherche et on stocke dans le session_state
+                        st.session_state['results'] = run_search(cropped_img)
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
