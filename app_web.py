@@ -126,34 +126,32 @@ if menu == "🔍 Recherche":
                     st.session_state['results'] = run_search(img)
 
         with tab_crop:
-            st.info("💡 Si le cadre ne s'affiche pas, touchez l'image ou passez en 'Version pour ordinateur'.")
-            
-            # Préparation propre de l'image
-            img_for_crop = img.copy().convert("RGB")
-            img_for_crop.thumbnail((700, 700))
+            # On utilise le nom du fichier pour créer une clé unique
+            # Cela force le reset du cadre rouge à chaque nouvelle image
+            dynamic_key = f"cropper_{uploaded_file.name}"
+
+            img_for_crop = img.copy()
+            img_for_crop.thumbnail((600, 600)) 
 
             try:
-                # Appel avec uniquement les arguments essentiels
-                # On enlève should_resize_canvas pour voir si c'est lui qui cause le TypeError
                 cropped_img = st_cropper(
                     img_for_crop, 
                     realtime_update=True, 
                     box_color='#FF0000', 
                     aspect_ratio=None, 
-                    key="cropper_stable_v10" 
+                    key=dynamic_key # <--- Changement CRITIQUE ici
                 )
                 
                 if cropped_img:
-                    st.write("Selection prête :")
+                    st.write("✅ Sélection prête")
                     st.image(cropped_img, width=150)
 
-                    if st.button("LANCER L'ANALYSE", type="primary", key="btn_final_crop"):
-                        with st.spinner("Recherche..."):
+                    if st.button("LANCER L'ANALYSE", type="primary", key=f"btn_{uploaded_file.name}"):
+                        with st.spinner("Analyse en cours..."):
                             st.session_state['results'] = run_search(cropped_img)
             
             except Exception as e:
-                st.error(f"Erreur widget : {e}")
-                st.warning("Le composant de recadrage a un souci technique sur ce navigateur.")
+                st.error(f"Erreur technique : {e}")
 
         # Affichage des résultats en dessous des onglets
         if 'results' in st.session_state:
