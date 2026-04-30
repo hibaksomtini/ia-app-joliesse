@@ -404,7 +404,9 @@ elif menu == "🔐 Administration":
                     action_type = ""
                     if row:
                         current_paths = row[0] if row[0] else ""
-                        updated_paths = f"{current_paths}, {unique_name}" if current_paths else unique_name
+                        # On utilise "|" comme séparateur au lieu de ", "
+                        updated_paths = f"{current_paths}|{unique_name}" if current_paths else unique_name
+    
                         sql = "UPDATE products SET image_paths = %s, embedding = %s WHERE product_ref = %s"
                         cur.execute(sql, (updated_paths, str(embedding), new_ref))
                         action_type = "Mise à jour (Image ajoutée)"
