@@ -330,7 +330,7 @@ elif menu == "🔐 Administration":
     if not st.session_state["admin_authenticated"]:
         pwd = st.text_input("Code d'accès sécurisé", type="password")
         if st.button("Se connecter"):
-            if pwd == "joliesse@2026": 
+            if pwd == "Joliesse@2026":
                 st.session_state["admin_authenticated"] = True
                 st.rerun()
             else:
@@ -344,6 +344,116 @@ elif menu == "🔐 Administration":
             if st.button("Se déconnecter"):
                 st.session_state["admin_authenticated"] = False
                 st.rerun()
+
+        st.divider()
+
+        # =====================================================================
+        # 🌟 NOUVEAU BLOC : IMPORTATION DES FICHIERS CEGID (UPSERT)
+        # =====================================================================
+        st.write("### 📊 Importation et Synchronisation Cegid")
+        st.info("Glissez un ou plusieurs fichiers Excel (.xlsx) Cegid. Le système ajoutera les nouvelles déclinaisons ou mettra à jour celles existantes sans écraser le reste.")
+
+        # Uploader multi-fichiers
+        cegid_files = st.file_uploader(
+            "Choisir les fichiers Excel Cegid", 
+            type=['xlsx'], 
+            accept_multiple_files=True,
+            key="cegid_multi_uploader"
+        )
+
+        if cegid_files:
+            if st.button("🚀 LANCER LA SYNCHRONISATION CEGID", type="primary"):
+                try:
+                    # 1. Connexion et création de la table si elle n'existe pas
+                    conn = pg8000.connect(**DB_CONFIG)
+                    cur = conn.cursor()
+                    
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS cegid_stocks (
+                            id SERIAL PRIMARY KEY,
+                            product_ref VARCHAR(50) NOT NULL,
+                            barcode VARCHAR(50) UNIQUE NOT NULL,
+                            color VARCHAR(50),
+                            size_label VARCHAR(50),
+                            price NUMERIC(10, 2),
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        );
+                    """)
+                    conn.commit()
+
+                    total_inserted = 0
+                    total_updated = 0
+
+                    # 2. Boucle sur chaque fichier Excel
+                    for uploaded_file in cegid_files:
+                        with st.spinner(f"Traitement du fichier : {uploaded_file.name}..."):
+                            # Lecture du fichier Excel en forçant les types chaînes
+                            df = pd.read_excel(uploaded_file, dtype={
+                                'Code article': str,
+                                'Code-barres article': str,
+                                'Couleur': str,
+                                'Libellé dimension': str
+                            })
+                            
+                            current_parent_price = 0.0
+
+                            # Parcours des lignes du fichier Excel
+                            for index, row in df.iterrows():
+                                ref = str(row.get('Code article', '')).strip()
+                                barcode = str(row.get('Code-barres article', '')).strip()
+                                color = str(row.get('Couleur', '')).strip()
+                                size = str(row.get('Libellé dimension', '')).strip()
+                                price_val = row.get('Prix Détail (TTC)')
+
+                                # Gestion de la ligne "Parent" (Pas de code-barres, mais contient le prix global)
+                                if (barcode == '' or barcode == 'nan') and ref != '' and ref != 'nan':
+                                    if pd.notna(price_val):
+                                        current_parent_price = float(price_val)
+                                    continue # On passe à la ligne suivante (déclinaison)
+
+                                # Ignorer les lignes totalement vides ou invalides
+                                if barcode == '' or barcode == 'nan' or ref == '' or ref == 'nan':
+                                    continue
+
+                                # Nettoyage des valeurs textuelles
+                                if color == 'nan' or color == '': color = "N/A"
+                                if size == 'nan' or size == '': size = "N/A"
+                                
+                                # Si la ligne enfant n'a pas de prix, on lui applique le prix du parent
+                                final_price = float(price_val) if pd.notna(price_val) else current_parent_price
+
+                                # 3. Requête SQL UPSERT (Vérification et insertion/mise à jour)
+                                # On regarde si le code-barres existe déjà
+                                cur.execute("SELECT id FROM cegid_stocks WHERE barcode = %s", (barcode,))
+                                existing_row = cur.fetchone()
+
+                                if existing_row:
+                                    # Mise à jour
+                                    sql_update = """
+                                        UPDATE cegid_stocks 
+                                        SET product_ref = %s, color = %s, size_label = %s, price = %s, updated_at = CURRENT_TIMESTAMP
+                                        WHERE barcode = %s
+                                    """
+                                    cur.execute(sql_update, (ref, color, size, final_price, barcode))
+                                    total_updated += 1
+                                else:
+                                    # Insertion
+                                    sql_insert = """
+                                        INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, price)
+                                        VALUES (%s, %s, %s, %s, %s)
+                                    """
+                                    cur.execute(sql_insert, (ref, barcode, color, size, final_price))
+                                    total_inserted += 1
+
+                    conn.commit()
+                    conn.close()
+                    
+                    st.success(f"✅ Synchronisation terminée avec succès ! | 📥 Ajouts : {total_inserted} | 🔄 Mises à jour : {total_updated}")
+                    time.sleep(2)
+                    st.rerun()
+
+                except Exception as e:
+                    st.error(f"Erreur lors de l'intégration du fichier Cegid : {e}")
 
         st.divider()
 
