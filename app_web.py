@@ -12,12 +12,13 @@ import io
 import time
 import pandas as pd
 warnings.filterwarnings("ignore", category=UserWarning)
+
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
 
-# Paramètres de connexion (Identiques à votre app Desktop)
+# Paramètres de connexion
 DB_CONFIG = {
-    "user": "postgres.mcmwrchllpqokgcdzmhl",
+"user": "postgres.mcmwrchllpqokgcdzmhl",
     "password": "Joliesse@123456",
     "host": "aws-0-eu-west-1.pooler.supabase.com",
     "database": "postgres",
@@ -36,45 +37,9 @@ def load_model():
 
 model = load_model()
 
-def display_cegid_table(product_ref):
-    """
-    Va chercher les déclinaisons Cegid dans PostgreSQL et les affiche dans un joli tableau.
-    """
-    try:
-        conn = pg8000.connect(**DB_CONFIG)
-        cur = conn.cursor()
-        
-        # Récupération des déclinaisons triées par pointure/taille
-        query = """
-            SELECT barcode, color, size_label, price 
-            FROM cegid_stocks 
-            WHERE product_ref = %s 
-            ORDER BY size_label ASC
-        """
-        cur.execute(query, (str(product_ref).strip(),))
-        rows = cur.fetchall()
-        conn.close()
-
-        if rows:
-            # 1. Extraction des couleurs uniques (en ignorant les N/A ou vides)
-            # set() supprime automatiquement les doublons
-            unique_colors = sorted(list(set(
-                str(row[1]).strip() for row in rows if row[1] and str(row[1]).strip() not in ["N/A", "nan", ""]
-            )))
-            
-            # 2. Préparation du DataFrame pour le tableau
-            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
-            df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x else "-")
-            
-            return df_variants, unique_colors
-        return None, []
-            
-    except Exception as e:
-        st.error(f"Erreur Cegid : {e}")
-        return None, []
 def get_cegid_data_and_colors(product_ref):
     """
-    Récupère les déclinaisons Cegid et extrait la liste des couleurs uniques.
+    Récupère les déclinaisons Cegid et extrait la liste des couleurs uniques sans doublons.
     """
     try:
         conn = pg8000.connect(**DB_CONFIG)
@@ -92,14 +57,13 @@ def get_cegid_data_and_colors(product_ref):
 
         if rows:
             # 1. Extraction des couleurs uniques (en ignorant les N/A ou vides)
-            # set() supprime automatiquement les doublons
             unique_colors = sorted(list(set(
                 str(row[1]).strip() for row in rows if row[1] and str(row[1]).strip() not in ["N/A", "nan", ""]
             )))
             
             # 2. Préparation du DataFrame pour le tableau
             df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
-            df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x else "-")
+            df_variants['Prix (DT)'] = df_variants['Prix (DT)' or '-'].apply(lambda x: f"{float(x):.2f} DT" if x and str(x) != '-' else "-")
             
             return df_variants, unique_colors
         return None, []
@@ -107,9 +71,9 @@ def get_cegid_data_and_colors(product_ref):
     except Exception as e:
         st.error(f"Erreur Cegid : {e}")
         return None, []
+
 # --- LOGIQUE DE RECHERCHE ET RÉPARATION ---
 def run_search(processed_image):
-    # Encodage de l'image
     embedding = model.encode(processed_image, convert_to_numpy=True)
     norm = np.linalg.norm(embedding)
     query_vec = (embedding / norm).flatten()
@@ -118,7 +82,6 @@ def run_search(processed_image):
         conn = pg8000.connect(**DB_CONFIG)
         cur = conn.cursor()
         
-        # Récupération des 5 colonnes nécessaires
         cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products")
         rows = cur.fetchall()
         conn.close()
@@ -126,15 +89,12 @@ def run_search(processed_image):
         results = []
         st.write(f"Vérification de {len(rows)} produits...")
         for row in rows:
-            # Sécurité 1 : Structure de la ligne
             if len(row) < 5:
                 continue
                 
             ref, price, img_data, db_emb, colors = row
 
-            # Sécurité 2 : On ignore si l'embedding est absent
             if db_emb is None:
-                print(f"Skipping {ref}: Embedding is None")
                 continue 
 
             try:
@@ -144,17 +104,12 @@ def run_search(processed_image):
 
                 db_vec = np.array(db_emb).flatten()
                 
-                # Sécurité 3 : Taille du vecteur CLIP (768)
                 if db_vec.shape[0] != 768 or np.all(db_vec == 0):
-                    print(f"Dimension mismatch for {ref}: {db_vec.shape[0]}")
                     continue
 
                 # CALCUL DE SIMILARITÉ
                 score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
-                
-                print(f"Ref: {ref} | Score: {score:.4f}")
 
-                # Formatage des images
                 if score > 0.1: 
                     img_list = str(img_data).split('|') if img_data else []
                     results.append({
@@ -165,10 +120,8 @@ def run_search(processed_image):
                         "colors": colors if colors else "N/A"
                     })
             except Exception as e:
-                print(f"Error processing {ref}: {e}")
                 continue
 
-        # Tri par meilleur score et limitation aux 10 meilleurs
         return sorted(results, key=lambda x: x["score"], reverse=True)[:10]
 
     except Exception as e:
@@ -185,7 +138,6 @@ if menu == "🔍 Recherche":
     uploaded_file = st.file_uploader("Charger une photo de chaussure", type=['jpg', 'jpeg', 'png'])
     
     if uploaded_file:
-        # --- MÉCANISME DE RÉINITIALISATION ---
         if "last_uploaded_file" not in st.session_state or st.session_state["last_uploaded_file"] != uploaded_file.name:
             st.session_state["last_uploaded_file"] = uploaded_file.name
             if 'results' in st.session_state:
@@ -193,8 +145,6 @@ if menu == "🔍 Recherche":
         
         img = Image.open(uploaded_file)
     
-        # --- REMPLACEMENT DES ONGLETS PAR UN BOUTON RADIO ---
-        # Cela force Streamlit à afficher le cropper sur une page propre
         mode = st.radio("Méthode d'analyse :", ["🚀 Scan Direct (Image entière)", "✂️ Recadrage Précis"], horizontal=True)
 
         if mode == "🚀 Scan Direct (Image entière)":
@@ -206,13 +156,10 @@ if menu == "🔍 Recherche":
 
         else:
             st.warning("💡 Touchez l'image ci-dessous pour activer le cadre rouge.")
-            
-            # Préparation de l'image pour le cropper
             img_display = img.copy().convert("RGB")
             img_display.thumbnail((1000, 1000)) 
 
             try:
-                # Appel du cropper hors des onglets pour éviter les bugs de rendu
                 cropped_img = st_cropper(
                     img_display,
                     realtime_update=True,
@@ -236,7 +183,7 @@ if menu == "🔍 Recherche":
             except Exception as e:
                 st.error(f"Le widget de recadrage ne répond pas : {e}")
 
-        # Affichage des résultats en dessous des onglets
+        # Affichage des résultats (Recherche)
         if 'results' in st.session_state:
             st.divider()
             st.subheader("Résultats de l'analyse")
@@ -252,12 +199,8 @@ if menu == "🔍 Recherche":
                     with c2:
                         st.write(f"### REF: {res['ref']}")
 
-                        # =============================================================
-                        # 🌟 CHARGEMENT DYNAMIQUE DES DONNÉES ET COULEURS CEGID
-                        # =============================================================
+                        # Injection et fusion des couleurs Cegid
                         df_cegid, cegid_colors = get_cegid_data_and_colors(res['ref'])
-
-                        # Détermination de la couleur (Priorité base principale, sinon Cegid)
                         if res.get('colors') and res['colors'] != "Non spécifié":
                             couleur_a_afficher = res['colors']
                         elif cegid_colors:
@@ -265,31 +208,26 @@ if menu == "🔍 Recherche":
                         else:
                             couleur_a_afficher = "Non spécifiée"
 
-                        # Affichage de la couleur mise à jour
                         if couleur_a_afficher != "Non spécifiée":
                             st.write(f"🎨 **Couleur(s) dispo :** {couleur_a_afficher}")
                         else:
                             st.caption("Couleur non spécifiée")
-                        # =============================================================
 
                         # Gestion du prix
                         current_price = res.get('price')
-    
                         if current_price is not None and float(current_price) > 0:
                             st.write(f"Prix : :green[{float(current_price):.2f} DT]")
                         else:
                             st.write("Prix : :orange[Non défini]")
 
                         score_val = res.get('score', 0.0)
-
                         if np.isnan(score_val):
                             score_val = 0.0
 
-                        # Barre de progression pour le score de match
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
-                
-                        # Rendu du tableau Cegid préparé en amont
+                        
+                        # Affichage tableau Cegid
                         st.divider()
                         if df_cegid is not None:
                             with st.expander(f"📊 Voir les déclinaisons & codes-barres Cegid ({len(df_cegid)})"):
@@ -299,29 +237,24 @@ if menu == "🔍 Recherche":
 
         with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
             st.write("Aidez-nous à améliorer le catalogue Joliesse.")
-    
+        
             with st.form("feedback_form", clear_on_submit=True):
                 type_msg = st.selectbox("Type de message :", [
                     "🔍 Article non trouvé (Lancer l'ajout)", 
                     "⚠️ Erreur d'information (Prix/Couleur)", 
                     "💡 Suggestion d'amélioration"
                 ])
-
                 user_comment = st.text_area("Détails (référence manquante, erreur constatée...)")
-
                 feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
 
                 if st.form_submit_button("ENVOYER LE SIGNALEMENT"):
                     if user_comment:
                         try:
                             file_name = None
-    
-                            # --- 1. SI UNE IMAGE EST JOINTE ---
                             if feedback_img:
                                 import time
                                 file_ext = feedback_img.name.split('.')[-1]
                                 file_name = f"fb_{int(time.time())}.{file_ext}"
-        
                                 with st.spinner("Envoi de l'image..."):
                                     feedback_img.seek(0)
                                     supabase.storage.from_("catalogue").upload(
@@ -330,23 +263,20 @@ if menu == "🔍 Recherche":
                                         file_options={"content-type": f"image/{file_ext}"}
                                     )
 
-                            # --- 2. INSERTION DANS LA TABLE SQL ---
                             conn = pg8000.connect(**DB_CONFIG)
                             cur = conn.cursor()
-    
                             sql = """
                                 INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) 
                                 VALUES (%s, %s, %s, %s)
                             """
                             cur.execute(sql, (type_msg, user_comment, "Nouveau", file_name))
-    
                             conn.commit()
                             conn.close()
                             st.success("✅ Signalement envoyé avec succès !")
-    
                         except Exception as e:
                             st.error(f"Erreur lors de l'envoi : {e}")  
-if menu == "📦 Catalogue":
+
+elif menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
     search_ref = st.text_input("🔍 Rechercher par référence", placeholder="Ex: 4414")
     
@@ -361,9 +291,9 @@ if menu == "📦 Catalogue":
         
         rows = cur.fetchall()
         conn.close()
+
         for row in rows:
             try:
-                # Tentative de lecture sécurisée
                 ref = row[0]
                 price = row[1]
                 img_data = row[2]
@@ -374,7 +304,6 @@ if menu == "📦 Catalogue":
                     c1, c2 = st.columns([1, 2])
             
                     with c1:
-                        # Affichage de l'image du catalogue
                         img_list = str(img_data).split('|') if img_data else []
                         if img_list:
                             full_url = STORAGE_URL + img_list[0].strip()
@@ -383,16 +312,26 @@ if menu == "📦 Catalogue":
                             st.info("Aucune image")
 
                     with c2:
-                        # Affichage des détails
                         st.write(f"**Prix :** {f'{price:.2f} DT' if price else ':orange[Non défini]'}")
                 
-                        # Affichage de la couleur (notre nouvelle colonne !)
-                        if colors and colors != "None":
-                            st.write(f"🎨 **Couleur :** {colors}")
+                        # =============================================================
+                        # 🌟 CHARGEMENT ET SYNC DES COULEURS CEGID DANS LE CATALOGUE
+                        # =============================================================
+                        df_cegid, cegid_colors = get_cegid_data_and_colors(ref)
+                        
+                        if colors and colors != "None" and colors != "Non spécifié":
+                            couleur_catalogue = colors
+                        elif cegid_colors:
+                            couleur_catalogue = ", ".join(cegid_colors)
+                        else:
+                            couleur_catalogue = "Non spécifiée"
+
+                        if couleur_catalogue != "Non spécifiée":
+                            st.write(f"🎨 **Couleur(s) dispo :** {couleur_catalogue}")
                         else:
                             st.caption("🎨 Couleur : Non spécifiée")
+                        # =============================================================
                 
-                        # Statut de l'IA (Vecteur)
                         if db_emb is not None:
                             st.success("✅ Prêt pour l'analyse IA")
                         else:
@@ -400,38 +339,40 @@ if menu == "📦 Catalogue":
                             if st.button(f"Générer l'index pour {ref}", key=ref):
                                 st.info("Traitement en cours...")
 
-                        # 🌟 INJECTION ICI : Tableau Cegid dans la fiche catalogue
+                        # Rendu direct du tableau (sans requêter la BDD à nouveau)
                         st.divider()
-                        display_cegid_table(ref)
+                        if df_cegid is not None:
+                            with st.container():
+                                st.write("📊 **Déclinaisons & codes-barres Cegid :**")
+                                st.dataframe(df_cegid, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("ℹ️ Aucune déclinaison Cegid trouvée pour cette référence.")
+
             except IndexError as e:
-                st.error(f"💥 INDEX ERROR : Vous essayez d'accéder à la colonne 5 (colors), mais la ligne n'a que {len(row)} colonnes.")
-                st.write(f"Contenu de la ligne SQL : {row}")
-                break # Arrête la boucle pour ne pas flooder l'écran d'erreurs
+                st.error(f"💥 INDEX ERROR : Manque de colonnes dans la table SQL ({len(row)} trouvées).")
+                break
                 
     except Exception as e:
         st.error(f"Impossible de charger le catalogue : {e}")
 
 elif menu == "🔐 Administration":
-    # --- 1. INITIALISATION DE L'HISTORIQUE ---
     if 'upload_history' not in st.session_state:
         st.session_state['upload_history'] = []
 
     st.subheader("Gestion du Catalogue & Indexation IA")
     
-    # --- PROTECTION PAR MOT DE PASSE ---
     if "admin_authenticated" not in st.session_state:
         st.session_state["admin_authenticated"] = False
 
     if not st.session_state["admin_authenticated"]:
         pwd = st.text_input("Code d'accès sécurisé", type="password")
         if st.button("Se connecter"):
-            if pwd == "Joliesse@2026":
+            if pwd == "Joliesse@2026": 
                 st.session_state["admin_authenticated"] = True
                 st.rerun()
             else:
                 st.error("Accès refusé.")
     else:
-        # --- DASHBOARD ADMIN ---
         col1, col2 = st.columns([0.8, 0.2])
         with col1:
             st.success("Mode Administrateur Activé")
@@ -442,11 +383,8 @@ elif menu == "🔐 Administration":
 
         st.divider()
 
-        # =====================================================================
-        # 🌟 NOUVEAU BLOC : IMPORTATION DES FICHIERS CEGID (UPSERT)
-        # =====================================================================
         st.write("### 📊 Importation et Synchronisation Cegid (Optimisée)")
-        st.info("Glissez vos fichiers Excel. Le traitement est désormais optimisé en bloc pour éviter les coupures (Time-out).")
+        st.info("Glissez vos fichiers Excel. Le traitement est désormais optimisé en bloc.")
 
         cegid_files = st.file_uploader(
             "Choisir les fichiers Excel Cegid", 
@@ -458,7 +396,6 @@ elif menu == "🔐 Administration":
         if cegid_files:
             if st.button("🚀 LANCER LA SYNCHRONISATION CEGID", type="primary"):
                 try:
-                    # 1. Connexion et création de la table avec contrainte UNIQUE explicite
                     conn = pg8000.connect(**DB_CONFIG)
                     cur = conn.cursor()
                     
@@ -477,7 +414,6 @@ elif menu == "🔐 Administration":
 
                     all_rows_to_upsert = []
                     
-                    # 2. Lecture et préparation des données en mémoire avec Pandas
                     for uploaded_file in cegid_files:
                         with st.spinner(f"Préparation de : {uploaded_file.name}..."):
                             df = pd.read_excel(uploaded_file, dtype={
@@ -496,13 +432,11 @@ elif menu == "🔐 Administration":
                                 size = str(row.get('Libellé dimension', '')).strip()
                                 price_val = row.get('Prix Détail (TTC)')
 
-                                # Ligne Parent
                                 if (barcode == '' or barcode == 'nan') and ref != '' and ref != 'nan':
                                     if pd.notna(price_val):
                                         current_parent_price = float(price_val)
                                     continue
 
-                                # Ignorer lignes vides
                                 if barcode == '' or barcode == 'nan' or ref == '' or ref == 'nan':
                                     continue
 
@@ -510,15 +444,10 @@ elif menu == "🔐 Administration":
                                 if size == 'nan' or size == '': size = "N/A"
                                 
                                 final_price = float(price_val) if pd.notna(price_val) else current_parent_price
-
-                                # On stocke un tuple propre pour le moteur SQL
                                 all_rows_to_upsert.append((ref, barcode, color, size, final_price))
 
-                    # 3. Envoi massif à PostgreSQL en UNE SEULE REQUÊTE
                     if all_rows_to_upsert:
-                        with st.spinner(f"Envoi de {len(all_rows_to_upsert)} déclinaisons à la base de données..."):
-                            
-                            # Requête UPSERT native Postgres (Mise à jour automatique sur conflit de code-barres)
+                        with st.spinner(f"Envoi de {len(all_rows_to_upsert)} déclinaisons à la base..."):
                             sql_upsert = """
                                 INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, price)
                                 VALUES (%s, %s, %s, %s, %s)
@@ -530,14 +459,11 @@ elif menu == "🔐 Administration":
                                     price = EXCLUDED.price,
                                     updated_at = CURRENT_TIMESTAMP;
                             """
-                            
-                            # Injection de masse
                             cur.executemany(sql_upsert, all_rows_to_upsert)
                             conn.commit()
-                            
-                            st.success(f"✅ Synchronisation réussie ! {len(all_rows_to_upsert)} lignes traitées instantanément.")
+                            st.success(f"✅ Synchronisation réussie ! {len(all_rows_to_upsert)} lignes traitées.")
                     else:
-                        st.warning("⚠️ Aucun code-barres valide trouvé dans les fichiers.")
+                        st.warning("⚠️ Aucun code-barres valide trouvé.")
 
                     conn.close()
                     time.sleep(2)
@@ -548,7 +474,6 @@ elif menu == "🔐 Administration":
 
         st.divider()
 
-        # --- BLOC 1 : MESSAGES (FEEDBACKS) ---
         st.write("### 📩 Messages et Alertes")
         try:
             conn = pg8000.connect(**DB_CONFIG)
@@ -567,13 +492,11 @@ elif menu == "🔐 Administration":
                 st.info("Aucun nouveau message.")
             conn.close()
         except Exception as e:
-            st.info("La table des messages est vide ou en attente.")
+            st.info("La table des messages est en attente.")
 
         st.divider()
 
-        # --- BLOC 2 : IMPORTATION D'ARTICLES (STOCKS) ---
         st.write("### 🗃️ Gestion du Stock (Import Unique)")
-        
         with st.form("admin_smart_upload", clear_on_submit=True):
             new_ref = st.text_input("Référence de l'article (ex: 4420)")
             new_file = st.file_uploader("Ajouter une image", type=['jpg', 'jpeg', 'png'])
@@ -582,21 +505,17 @@ elif menu == "🔐 Administration":
         if submitted:
             if new_ref and new_file:
                 try:
-                    # 1. IA & Image
                     image = Image.open(new_file).convert("RGB")
                     with st.spinner("Analyse CLIP..."):
                         embedding = model.encode(image).tolist()
                     
-                    # 2. Nom de fichier unique
                     file_ext = new_file.name.split('.')[-1]
                     unique_name = f"{new_ref}_{int(time.time())}.{file_ext}"
 
-                    # 3. Préparation Buffer
                     buffer = io.BytesIO()
                     image.save(buffer, format="JPEG", quality=85)
                     buffer_data = buffer.getvalue()
 
-                    # 4. SQL UPSERT
                     conn = pg8000.connect(**DB_CONFIG)
                     cur = conn.cursor()
                     cur.execute("SELECT image_paths FROM products WHERE product_ref = %s", (new_ref,))
@@ -605,9 +524,7 @@ elif menu == "🔐 Administration":
                     action_type = ""
                     if row:
                         current_paths = row[0] if row[0] else ""
-                        # On utilise "|" comme séparateur au lieu de ", "
                         updated_paths = f"{current_paths}|{unique_name}" if current_paths else unique_name
-    
                         sql = "UPDATE products SET image_paths = %s, embedding = %s WHERE product_ref = %s"
                         cur.execute(sql, (updated_paths, str(embedding), new_ref))
                         action_type = "Mise à jour (Image ajoutée)"
@@ -616,7 +533,6 @@ elif menu == "🔐 Administration":
                         cur.execute(sql, (new_ref, unique_name, str(embedding)))
                         action_type = "Nouveau Produit Créé"
 
-                    # 5. Storage Supabase
                     supabase.storage.from_("catalogue").upload(
                         path=unique_name,
                         file=buffer_data,
@@ -626,7 +542,6 @@ elif menu == "🔐 Administration":
                     conn.commit()
                     conn.close()
 
-                    # --- AJOUT À L'HISTORIQUE ---
                     new_entry = {
                         'Heure': time.strftime("%H:%M:%S"),
                         'Référence': new_ref,
@@ -637,24 +552,19 @@ elif menu == "🔐 Administration":
                     st.session_state['upload_history'] = st.session_state['upload_history'][:10]
 
                     st.success(f"✅ Article {new_ref} traité avec succès !")
-
                 except Exception as e:
                     st.error(f"Erreur technique : {e}")
             else:
                 st.warning("Veuillez remplir la référence ET choisir une image.")
 
-        # --- BLOC 3 : AFFICHAGE DE L'HISTORIQUE ---
         if st.session_state['upload_history']:
             st.divider()
             st.subheader("⏱️ Historique Récent")
-            
-            # Barre d'état dynamique
             last = st.session_state['upload_history'][0]
             if "Nouveau" in last['Action']:
                 st.success(f"🆕 **Nouveau produit créé** : Réf {last['Référence']}")
             else:
                 st.info(f"🔄 **Image ajoutée** à la référence : {last['Référence']}")
 
-            # Tableau des 10 derniers
             df_hist = pd.DataFrame(st.session_state['upload_history'])
             st.dataframe(df_hist, use_container_width=True, hide_index=True)
