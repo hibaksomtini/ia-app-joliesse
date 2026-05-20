@@ -18,11 +18,12 @@ st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
 
 # Paramètres de connexion
 DB_CONFIG = {
-"user": "postgres.mcmwrchllpqokgcdzmhl",
+    "user": "postgres.mcmwrchllpqokgcdzmhl",
     "password": "Joliesse@123456",
     "host": "aws-0-eu-west-1.pooler.supabase.com",
     "database": "postgres",
     "port": 6543
+
 }
 STORAGE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co/storage/v1/object/public/catalogue/"
 
@@ -39,7 +40,7 @@ model = load_model()
 
 def get_cegid_data_and_colors(product_ref):
     """
-    Récupère les déclinaisons Cegid et extrait la liste des couleurs uniques sans doublons.
+    Récupère les déclinaisons Cegid, extrait la liste des couleurs uniques et le prix max/par défaut.
     """
     try:
         conn = pg8000.connect(**DB_CONFIG)
@@ -61,16 +62,20 @@ def get_cegid_data_and_colors(product_ref):
                 str(row[1]).strip() for row in rows if row[1] and str(row[1]).strip() not in ["N/A", "nan", ""]
             )))
             
-            # 2. Préparation du DataFrame pour le tableau
-            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
-            df_variants['Prix (DT)'] = df_variants['Prix (DT)' or '-'].apply(lambda x: f"{float(x):.2f} DT" if x and str(x) != '-' else "-")
+            # 2. Extraction du premier prix valide trouvé dans les déclinaisons Cegid
+            cegid_prices = [float(row[3]) for row in rows if row[3] and float(row[3]) > 0]
+            first_valid_price = cegid_prices[0] if cegid_prices else None
             
-            return df_variants, unique_colors
-        return None, []
+            # 3. Préparation du DataFrame pour le tableau
+            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
+            df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x and str(x) != '-' else "-")
+            
+            return df_variants, unique_colors, first_valid_price
+        return None, [], None
             
     except Exception as e:
         st.error(f"Erreur Cegid : {e}")
-        return None, []
+        return None, [], None
 
 # --- LOGIQUE DE RECHERCHE ET RÉPARATION ---
 def run_search(processed_image):
@@ -107,7 +112,6 @@ def run_search(processed_image):
                 if db_vec.shape[0] != 768 or np.all(db_vec == 0):
                     continue
 
-                # CALCUL DE SIMILARITÉ
                 score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
 
                 if score > 0.1: 
@@ -144,7 +148,6 @@ if menu == "🔍 Recherche":
                 del st.session_state['results']
         
         img = Image.open(uploaded_file)
-    
         mode = st.radio("Méthode d'analyse :", ["🚀 Scan Direct (Image entière)", "✂️ Recadrage Précis"], horizontal=True)
 
         if mode == "🚀 Scan Direct (Image entière)":
@@ -199,8 +202,9 @@ if menu == "🔍 Recherche":
                     with c2:
                         st.write(f"### REF: {res['ref']}")
 
-                        # Injection et fusion des couleurs Cegid
-                        df_cegid, cegid_colors = get_cegid_data_and_colors(res['ref'])
+                        df_cegid, cegid_colors, first_cegid_price = get_cegid_data_and_colors(res['ref'])
+                        
+                        # Priorité de la couleur
                         if res.get('colors') and res['colors'] != "Non spécifié":
                             couleur_a_afficher = res['colors']
                         elif cegid_colors:
@@ -213,10 +217,17 @@ if menu == "🔍 Recherche":
                         else:
                             st.caption("Couleur non spécifiée")
 
-                        # Gestion du prix
+                        # Priorité du Prix (Recherche)
                         current_price = res.get('price')
                         if current_price is not None and float(current_price) > 0:
-                            st.write(f"Prix : :green[{float(current_price):.2f} DT]")
+                            prix_a_afficher = float(current_price)
+                        elif first_cegid_price:
+                            prix_a_afficher = first_cegid_price
+                        else:
+                            prix_a_afficher = None
+
+                        if prix_a_afficher:
+                            st.write(f"Prix : :green[{prix_a_afficher:.2f} DT]")
                         else:
                             st.write("Prix : :orange[Non défini]")
 
@@ -227,7 +238,6 @@ if menu == "🔍 Recherche":
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
                         
-                        # Affichage tableau Cegid
                         st.divider()
                         if df_cegid is not None:
                             with st.expander(f"📊 Voir les déclinaisons & codes-barres Cegid ({len(df_cegid)})"):
@@ -237,13 +247,8 @@ if menu == "🔍 Recherche":
 
         with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
             st.write("Aidez-nous à améliorer le catalogue Joliesse.")
-        
             with st.form("feedback_form", clear_on_submit=True):
-                type_msg = st.selectbox("Type de message :", [
-                    "🔍 Article non trouvé (Lancer l'ajout)", 
-                    "⚠️ Erreur d'information (Prix/Couleur)", 
-                    "💡 Suggestion d'amélioration"
-                ])
+                type_msg = st.selectbox("Type de message :", ["🔍 Article non trouvé (Lancer l'ajout)", "⚠️ Erreur d'information (Prix/Couleur)", "💡 Suggestion d'amélioration"])
                 user_comment = st.text_area("Détails (référence manquante, erreur constatée...)")
                 feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
 
@@ -257,18 +262,11 @@ if menu == "🔍 Recherche":
                                 file_name = f"fb_{int(time.time())}.{file_ext}"
                                 with st.spinner("Envoi de l'image..."):
                                     feedback_img.seek(0)
-                                    supabase.storage.from_("catalogue").upload(
-                                        path=f"feedbacks/{file_name}",
-                                        file=feedback_img.read(),
-                                        file_options={"content-type": f"image/{file_ext}"}
-                                    )
+                                    supabase.storage.from_("catalogue").upload(path=f"feedbacks/{file_name}", file=feedback_img.read(), file_options={"content-type": f"image/{file_ext}"})
 
                             conn = pg8000.connect(**DB_CONFIG)
                             cur = conn.cursor()
-                            sql = """
-                                INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) 
-                                VALUES (%s, %s, %s, %s)
-                            """
+                            sql = "INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) VALUES (%s, %s, %s, %s)"
                             cur.execute(sql, (type_msg, user_comment, "Nouveau", file_name))
                             conn.commit()
                             conn.close()
@@ -312,13 +310,26 @@ elif menu == "📦 Catalogue":
                             st.info("Aucune image")
 
                     with c2:
-                        st.write(f"**Prix :** {f'{price:.2f} DT' if price else ':orange[Non défini]'}")
-                
                         # =============================================================
-                        # 🌟 CHARGEMENT ET SYNC DES COULEURS CEGID DANS LE CATALOGUE
+                        # 🌟 CHARGEMENT DYNAMIQUE ET FUSION DE COULEURS & PRIX (CEGID)
                         # =============================================================
-                        df_cegid, cegid_colors = get_cegid_data_and_colors(ref)
+                        df_cegid, cegid_colors, first_cegid_price = get_cegid_data_and_colors(ref)
                         
+                        # Détermination du prix final (Priorité Base principale -> Cegid)
+                        if price is not None and float(price) > 0:
+                            final_catalog_price = float(price)
+                        elif first_cegid_price:
+                            final_catalog_price = first_cegid_price
+                        else:
+                            final_catalog_price = None
+
+                        # Affichage du prix synchronisé
+                        if final_catalog_price:
+                            st.write(f"**Prix :** :green[{final_catalog_price:.2f} DT]")
+                        else:
+                            st.write("**Prix :** :orange[Non défini]")
+                        
+                        # Détermination de la couleur
                         if colors and colors != "None" and colors != "Non spécifié":
                             couleur_catalogue = colors
                         elif cegid_colors:
@@ -339,7 +350,6 @@ elif menu == "📦 Catalogue":
                             if st.button(f"Générer l'index pour {ref}", key=ref):
                                 st.info("Traitement en cours...")
 
-                        # Rendu direct du tableau (sans requêter la BDD à nouveau)
                         st.divider()
                         if df_cegid is not None:
                             with st.container():
@@ -367,7 +377,7 @@ elif menu == "🔐 Administration":
     if not st.session_state["admin_authenticated"]:
         pwd = st.text_input("Code d'accès sécurisé", type="password")
         if st.button("Se connecter"):
-            if pwd == "Joliesse@2026": 
+            if pwd == "Joliesse@2026":
                 st.session_state["admin_authenticated"] = True
                 st.rerun()
             else:
@@ -382,23 +392,16 @@ elif menu == "🔐 Administration":
                 st.rerun()
 
         st.divider()
-
         st.write("### 📊 Importation et Synchronisation Cegid (Optimisée)")
         st.info("Glissez vos fichiers Excel. Le traitement est désormais optimisé en bloc.")
 
-        cegid_files = st.file_uploader(
-            "Choisir les fichiers Excel Cegid", 
-            type=['xlsx'], 
-            accept_multiple_files=True,
-            key="cegid_multi_uploader"
-        )
+        cegid_files = st.file_uploader("Choisir les fichiers Excel Cegid", type=['xlsx'], accept_multiple_files=True, key="cegid_multi_uploader")
 
         if cegid_files:
             if st.button("🚀 LANCER LA SYNCHRONISATION CEGID", type="primary"):
                 try:
                     conn = pg8000.connect(**DB_CONFIG)
                     cur = conn.cursor()
-                    
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS cegid_stocks (
                             id SERIAL PRIMARY KEY,
@@ -413,16 +416,9 @@ elif menu == "🔐 Administration":
                     conn.commit()
 
                     all_rows_to_upsert = []
-                    
                     for uploaded_file in cegid_files:
                         with st.spinner(f"Préparation de : {uploaded_file.name}..."):
-                            df = pd.read_excel(uploaded_file, dtype={
-                                'Code article': str,
-                                'Code-barres article': str,
-                                'Couleur': str,
-                                'Libellé dimension': str
-                            })
-                            
+                            df = pd.read_excel(uploaded_file, dtype={'Code article': str, 'Code-barres article': str, 'Couleur': str, 'Libellé dimension': str})
                             current_parent_price = 0.0
 
                             for index, row in df.iterrows():
@@ -468,17 +464,14 @@ elif menu == "🔐 Administration":
                     conn.close()
                     time.sleep(2)
                     st.rerun()
-
                 except Exception as e:
                     st.error(f"Erreur lors de l'intégration : {e}")
 
         st.divider()
-
         st.write("### 📩 Messages et Alertes")
         try:
             conn = pg8000.connect(**DB_CONFIG)
             df_fb = pd.read_sql("SELECT id, created_at, type_message, commentaire, status, attachment_path FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC", conn)
-            
             if not df_fb.empty:
                 st.dataframe(df_fb, use_container_width=True, hide_index=True)
                 if st.button("Marquer ces messages comme 'Lus'"):
@@ -495,7 +488,6 @@ elif menu == "🔐 Administration":
             st.info("La table des messages est en attente.")
 
         st.divider()
-
         st.write("### 🗃️ Gestion du Stock (Import Unique)")
         with st.form("admin_smart_upload", clear_on_submit=True):
             new_ref = st.text_input("Référence de l'article (ex: 4420)")
@@ -533,24 +525,13 @@ elif menu == "🔐 Administration":
                         cur.execute(sql, (new_ref, unique_name, str(embedding)))
                         action_type = "Nouveau Produit Créé"
 
-                    supabase.storage.from_("catalogue").upload(
-                        path=unique_name,
-                        file=buffer_data,
-                        file_options={"content-type": "image/jpeg"}
-                    )
-
+                    supabase.storage.from_("catalogue").upload(path=unique_name, file=buffer_data, file_options={"content-type": "image/jpeg"})
                     conn.commit()
                     conn.close()
 
-                    new_entry = {
-                        'Heure': time.strftime("%H:%M:%S"),
-                        'Référence': new_ref,
-                        'Action': action_type,
-                        'Fichier': unique_name
-                    }
+                    new_entry = {'Heure': time.strftime("%H:%M:%S"), 'Référence': new_ref, 'Action': action_type, 'Fichier': unique_name}
                     st.session_state['upload_history'].insert(0, new_entry)
                     st.session_state['upload_history'] = st.session_state['upload_history'][:10]
-
                     st.success(f"✅ Article {new_ref} traité avec succès !")
                 except Exception as e:
                     st.error(f"Erreur technique : {e}")
