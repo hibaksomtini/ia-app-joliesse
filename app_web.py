@@ -41,32 +41,32 @@ model = load_model()
 def get_cegid_data_and_colors(product_ref):
     """
     Récupère les déclinaisons Cegid, extrait la liste des couleurs uniques et le prix max/par défaut.
+    Gère l'insensibilité à la casse (ex: e25mudm135 vs E25MUDM135).
     """
     try:
         conn = pg8000.connect(**DB_CONFIG)
         cur = conn.cursor()
         
+        # Utilisation de UPPER() pour matcher peu importe la casse dans la base
         query = """
             SELECT barcode, color, size_label, price 
             FROM cegid_stocks 
-            WHERE product_ref = %s 
+            WHERE UPPER(product_ref) = %s 
             ORDER BY size_label ASC
         """
-        cur.execute(query, (str(product_ref).strip(),))
+        # On passe la référence en majuscules ici aussi (.upper())
+        cur.execute(query, (str(product_ref).strip().upper(),))
         rows = cur.fetchall()
         conn.close()
 
         if rows:
-            # 1. Extraction des couleurs uniques (en ignorant les N/A ou vides)
             unique_colors = sorted(list(set(
                 str(row[1]).strip() for row in rows if row[1] and str(row[1]).strip() not in ["N/A", "nan", ""]
             )))
             
-            # 2. Extraction du premier prix valide trouvé dans les déclinaisons Cegid
             cegid_prices = [float(row[3]) for row in rows if row[3] and float(row[3]) > 0]
             first_valid_price = cegid_prices[0] if cegid_prices else None
             
-            # 3. Préparation du DataFrame pour le tableau
             df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
             df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x and str(x) != '-' else "-")
             
