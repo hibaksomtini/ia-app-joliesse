@@ -36,6 +36,41 @@ def load_model():
 
 model = load_model()
 
+def display_cegid_table(product_ref):
+    """
+    Va chercher les déclinaisons Cegid dans PostgreSQL et les affiche dans un joli tableau.
+    """
+    try:
+        conn = pg8000.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        
+        # Récupération des déclinaisons triées par pointure/taille
+        query = """
+            SELECT barcode, color, size_label, price 
+            FROM cegid_stocks 
+            WHERE product_ref = %s 
+            ORDER BY size_label ASC
+        """
+        cur.execute(query, (str(product_ref).strip(),))
+        rows = cur.fetchall()
+        conn.close()
+
+        if rows:
+            # Conversion en DataFrame Pandas pour un affichage propre
+            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
+            
+            # Formatage du prix pour afficher "DT"
+            df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x else "-")
+            
+            # Affichage du tableau dans un expander pour ne pas surcharger l'écran
+            with st.expander(f"📊 Voir les déclinaisons & codes-barres Cegid ({len(rows)})"):
+                st.dataframe(df_variants, use_container_width=True, hide_index=True)
+        else:
+            st.caption("ℹ️ Aucune déclinaison Cegid trouvée pour cette référence.")
+            
+    except Exception as e:
+        st.error(f"Erreur lors de la récupération des données Cegid : {e}")
+
 # --- LOGIQUE DE RECHERCHE ET RÉPARATION ---
 def run_search(processed_image):
     # Encodage de l'image
@@ -202,6 +237,9 @@ if menu == "🔍 Recherche":
                         # Barre de progression pour le score de match
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
+                        # 🌟 INJECTION ICI : Tableau Cegid pour le produit scanné
+                        st.divider()
+                        display_cegid_table(res['ref'])
             with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
                 st.write("Aidez-nous à améliorer le catalogue Joliesse.")
     
@@ -308,6 +346,10 @@ if menu == "📦 Catalogue":
                             st.warning("⚠️ Non indexé (IA inactive)")
                             if st.button(f"Générer l'index pour {ref}", key=ref):
                                 st.info("Traitement en cours...")
+
+                        # 🌟 INJECTION ICI : Tableau Cegid dans la fiche catalogue
+                        st.divider()
+                        display_cegid_table(ref)
             except IndexError as e:
                 st.error(f"💥 INDEX ERROR : Vous essayez d'accéder à la colonne 5 (colors), mais la ligne n'a que {len(row)} colonnes.")
                 st.write(f"Contenu de la ligne SQL : {row}")
