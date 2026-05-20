@@ -350,10 +350,9 @@ elif menu == "🔐 Administration":
         # =====================================================================
         # 🌟 NOUVEAU BLOC : IMPORTATION DES FICHIERS CEGID (UPSERT)
         # =====================================================================
-        st.write("### 📊 Importation et Synchronisation Cegid")
-        st.info("Glissez un ou plusieurs fichiers Excel (.xlsx) Cegid. Le système ajoutera les nouvelles déclinaisons ou mettra à jour celles existantes sans écraser le reste.")
+        st.write("### 📊 Importation et Synchronisation Cegid (Optimisée)")
+        st.info("Glissez vos fichiers Excel. Le traitement est désormais optimisé en bloc pour éviter les coupures (Time-out).")
 
-        # Uploader multi-fichiers
         cegid_files = st.file_uploader(
             "Choisir les fichiers Excel Cegid", 
             type=['xlsx'], 
@@ -364,7 +363,7 @@ elif menu == "🔐 Administration":
         if cegid_files:
             if st.button("🚀 LANCER LA SYNCHRONISATION CEGID", type="primary"):
                 try:
-                    # 1. Connexion et création de la table si elle n'existe pas
+                    # 1. Connexion et création de la table avec contrainte UNIQUE explicite
                     conn = pg8000.connect(**DB_CONFIG)
                     cur = conn.cursor()
                     
@@ -381,13 +380,11 @@ elif menu == "🔐 Administration":
                     """)
                     conn.commit()
 
-                    total_inserted = 0
-                    total_updated = 0
-
-                    # 2. Boucle sur chaque fichier Excel
+                    all_rows_to_upsert = []
+                    
+                    # 2. Lecture et préparation des données en mémoire avec Pandas
                     for uploaded_file in cegid_files:
-                        with st.spinner(f"Traitement du fichier : {uploaded_file.name}..."):
-                            # Lecture du fichier Excel en forçant les types chaînes
+                        with st.spinner(f"Préparation de : {uploaded_file.name}..."):
                             df = pd.read_excel(uploaded_file, dtype={
                                 'Code article': str,
                                 'Code-barres article': str,
@@ -397,7 +394,6 @@ elif menu == "🔐 Administration":
                             
                             current_parent_price = 0.0
 
-                            # Parcours des lignes du fichier Excel
                             for index, row in df.iterrows():
                                 ref = str(row.get('Code article', '')).strip()
                                 barcode = str(row.get('Code-barres article', '')).strip()
@@ -405,55 +401,55 @@ elif menu == "🔐 Administration":
                                 size = str(row.get('Libellé dimension', '')).strip()
                                 price_val = row.get('Prix Détail (TTC)')
 
-                                # Gestion de la ligne "Parent" (Pas de code-barres, mais contient le prix global)
+                                # Ligne Parent
                                 if (barcode == '' or barcode == 'nan') and ref != '' and ref != 'nan':
                                     if pd.notna(price_val):
                                         current_parent_price = float(price_val)
-                                    continue # On passe à la ligne suivante (déclinaison)
+                                    continue
 
-                                # Ignorer les lignes totalement vides ou invalides
+                                # Ignorer lignes vides
                                 if barcode == '' or barcode == 'nan' or ref == '' or ref == 'nan':
                                     continue
 
-                                # Nettoyage des valeurs textuelles
                                 if color == 'nan' or color == '': color = "N/A"
                                 if size == 'nan' or size == '': size = "N/A"
                                 
-                                # Si la ligne enfant n'a pas de prix, on lui applique le prix du parent
                                 final_price = float(price_val) if pd.notna(price_val) else current_parent_price
 
-                                # 3. Requête SQL UPSERT (Vérification et insertion/mise à jour)
-                                # On regarde si le code-barres existe déjà
-                                cur.execute("SELECT id FROM cegid_stocks WHERE barcode = %s", (barcode,))
-                                existing_row = cur.fetchone()
+                                # On stocke un tuple propre pour le moteur SQL
+                                all_rows_to_upsert.append((ref, barcode, color, size, final_price))
 
-                                if existing_row:
-                                    # Mise à jour
-                                    sql_update = """
-                                        UPDATE cegid_stocks 
-                                        SET product_ref = %s, color = %s, size_label = %s, price = %s, updated_at = CURRENT_TIMESTAMP
-                                        WHERE barcode = %s
-                                    """
-                                    cur.execute(sql_update, (ref, color, size, final_price, barcode))
-                                    total_updated += 1
-                                else:
-                                    # Insertion
-                                    sql_insert = """
-                                        INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, price)
-                                        VALUES (%s, %s, %s, %s, %s)
-                                    """
-                                    cur.execute(sql_insert, (ref, barcode, color, size, final_price))
-                                    total_inserted += 1
+                    # 3. Envoi massif à PostgreSQL en UNE SEULE REQUÊTE
+                    if all_rows_to_upsert:
+                        with st.spinner(f"Envoi de {len(all_rows_to_upsert)} déclinaisons à la base de données..."):
+                            
+                            # Requête UPSERT native Postgres (Mise à jour automatique sur conflit de code-barres)
+                            sql_upsert = """
+                                INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, price)
+                                VALUES (%s, %s, %s, %s, %s)
+                                ON CONFLICT (barcode) 
+                                DO UPDATE SET 
+                                    product_ref = EXCLUDED.product_ref,
+                                    color = EXCLUDED.color,
+                                    size_label = EXCLUDED.size_label,
+                                    price = EXCLUDED.price,
+                                    updated_at = CURRENT_TIMESTAMP;
+                            """
+                            
+                            # Injection de masse
+                            cur.executemany(sql_upsert, all_rows_to_upsert)
+                            conn.commit()
+                            
+                            st.success(f"✅ Synchronisation réussie ! {len(all_rows_to_upsert)} lignes traitées instantanément.")
+                    else:
+                        st.warning("⚠️ Aucun code-barres valide trouvé dans les fichiers.")
 
-                    conn.commit()
                     conn.close()
-                    
-                    st.success(f"✅ Synchronisation terminée avec succès ! | 📥 Ajouts : {total_inserted} | 🔄 Mises à jour : {total_updated}")
                     time.sleep(2)
                     st.rerun()
 
                 except Exception as e:
-                    st.error(f"Erreur lors de l'intégration du fichier Cegid : {e}")
+                    st.error(f"Erreur lors de l'intégration : {e}")
 
         st.divider()
 
