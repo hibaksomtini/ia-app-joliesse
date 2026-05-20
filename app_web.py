@@ -56,21 +56,57 @@ def display_cegid_table(product_ref):
         conn.close()
 
         if rows:
-            # Conversion en DataFrame Pandas pour un affichage propre
-            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
+            # 1. Extraction des couleurs uniques (en ignorant les N/A ou vides)
+            # set() supprime automatiquement les doublons
+            unique_colors = sorted(list(set(
+                str(row[1]).strip() for row in rows if row[1] and str(row[1]).strip() not in ["N/A", "nan", ""]
+            )))
             
-            # Formatage du prix pour afficher "DT"
+            # 2. Préparation du DataFrame pour le tableau
+            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
             df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x else "-")
             
-            # Affichage du tableau dans un expander pour ne pas surcharger l'écran
-            with st.expander(f"📊 Voir les déclinaisons & codes-barres Cegid ({len(rows)})"):
-                st.dataframe(df_variants, use_container_width=True, hide_index=True)
-        else:
-            st.caption("ℹ️ Aucune déclinaison Cegid trouvée pour cette référence.")
+            return df_variants, unique_colors
+        return None, []
             
     except Exception as e:
-        st.error(f"Erreur lors de la récupération des données Cegid : {e}")
+        st.error(f"Erreur Cegid : {e}")
+        return None, []
+def get_cegid_data_and_colors(product_ref):
+    """
+    Récupère les déclinaisons Cegid et extrait la liste des couleurs uniques.
+    """
+    try:
+        conn = pg8000.connect(**DB_CONFIG)
+        cur = conn.cursor()
+        
+        query = """
+            SELECT barcode, color, size_label, price 
+            FROM cegid_stocks 
+            WHERE product_ref = %s 
+            ORDER BY size_label ASC
+        """
+        cur.execute(query, (str(product_ref).strip(),))
+        rows = cur.fetchall()
+        conn.close()
 
+        if rows:
+            # 1. Extraction des couleurs uniques (en ignorant les N/A ou vides)
+            # set() supprime automatiquement les doublons
+            unique_colors = sorted(list(set(
+                str(row[1]).strip() for row in rows if row[1] and str(row[1]).strip() not in ["N/A", "nan", ""]
+            )))
+            
+            # 2. Préparation du DataFrame pour le tableau
+            df_variants = pd.DataFrame(rows, columns=['Code-barres', 'Couleur', 'Pointure/Taille', 'Prix (DT)'])
+            df_variants['Prix (DT)'] = df_variants['Prix (DT)'].apply(lambda x: f"{float(x):.2f} DT" if x else "-")
+            
+            return df_variants, unique_colors
+        return None, []
+            
+    except Exception as e:
+        st.error(f"Erreur Cegid : {e}")
+        return None, []
 # --- LOGIQUE DE RECHERCHE ET RÉPARATION ---
 def run_search(processed_image):
     # Encodage de l'image
@@ -216,14 +252,29 @@ if menu == "🔍 Recherche":
                     with c2:
                         st.write(f"### REF: {res['ref']}")
 
-                        if res['colors'] != "Non spécifié":
-                            st.write(f"🎨 **Couleur :** {res['colors']}")
+                        # =============================================================
+                        # 🌟 CHARGEMENT DYNAMIQUE DES DONNÉES ET COULEURS CEGID
+                        # =============================================================
+                        df_cegid, cegid_colors = get_cegid_data_and_colors(res['ref'])
+
+                        # Détermination de la couleur (Priorité base principale, sinon Cegid)
+                        if res.get('colors') and res['colors'] != "Non spécifié":
+                            couleur_a_afficher = res['colors']
+                        elif cegid_colors:
+                            couleur_a_afficher = ", ".join(cegid_colors)
+                        else:
+                            couleur_a_afficher = "Non spécifiée"
+
+                        # Affichage de la couleur mise à jour
+                        if couleur_a_afficher != "Non spécifiée":
+                            st.write(f"🎨 **Couleur(s) dispo :** {couleur_a_afficher}")
                         else:
                             st.caption("Couleur non spécifiée")
+                        # =============================================================
 
                         # Gestion du prix
                         current_price = res.get('price')
-            
+    
                         if current_price is not None and float(current_price) > 0:
                             st.write(f"Prix : :green[{float(current_price):.2f} DT]")
                         else:
@@ -237,62 +288,64 @@ if menu == "🔍 Recherche":
                         # Barre de progression pour le score de match
                         st.caption(f"Match : {score_val*100:.1f}%")
                         st.progress(min(max(float(score_val), 0.0), 1.0))
-                        # 🌟 INJECTION ICI : Tableau Cegid pour le produit scanné
-                        st.divider()
-                        display_cegid_table(res['ref'])
-            with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
-                st.write("Aidez-nous à améliorer le catalogue Joliesse.")
-    
-                with st.form("feedback_form", clear_on_submit=True):
-                    type_msg = st.selectbox("Type de message :", [
-                        "🔍 Article non trouvé (Lancer l'ajout)", 
-                        "⚠️ Erreur d'information (Prix/Couleur)", 
-                        "💡 Suggestion d'amélioration"
-                    ])
-        
-                    user_comment = st.text_area("Détails (référence manquante, erreur constatée...)")
-        
-                    # Optionnel : permettre d'envoyer l'image qui a posé problème
-                    feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
-        
-                    if st.form_submit_button("ENVOYER LE SIGNALEMENT"):
-                        if user_comment:
-                            try:
-                                file_name = None
-            
-                                # --- 1. SI UNE IMAGE EST JOINTE ---
-                                if feedback_img:
-                                    import time
-                                    # Nom unique pour le feedback (ex: fb_4420_1713456000.jpg)
-                                    file_ext = feedback_img.name.split('.')[-1]
-                                    file_name = f"fb_{int(time.time())}.{file_ext}"
                 
-                                    # Upload vers un dossier 'feedbacks' dans votre bucket
-                                    with st.spinner("Envoi de l'image..."):
-                                        feedback_img.seek(0)
-                                        supabase.storage.from_("catalogue").upload(
-                                            path=f"feedbacks/{file_name}",
-                                            file=feedback_img.read(),
-                                            file_options={"content-type": f"image/{file_ext}"}
-                                        )
+                        # Rendu du tableau Cegid préparé en amont
+                        st.divider()
+                        if df_cegid is not None:
+                            with st.expander(f"📊 Voir les déclinaisons & codes-barres Cegid ({len(df_cegid)})"):
+                                st.dataframe(df_cegid, use_container_width=True, hide_index=True)
+                        else:
+                            st.caption("ℹ️ Aucune déclinaison Cegid trouvée pour cette référence.")
 
-                                # --- 2. INSERTION DANS LA TABLE SQL ---
-                                conn = pg8000.connect(**DB_CONFIG)
-                                cur = conn.cursor()
-            
-                                # On ajoute 'attachment_path' à la requête
-                                sql = """
-                                    INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) 
-                                    VALUES (%s, %s, %s, %s)
-                                """
-                                cur.execute(sql, (type_msg, user_comment, "Nouveau", file_name))
-            
-                                conn.commit()
-                                conn.close()
-                                st.success("✅ Signalement envoyé avec succès !")
-            
-                            except Exception as e:
-                                st.error(f"Erreur lors de l'envoi : {e}")  
+        with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
+            st.write("Aidez-nous à améliorer le catalogue Joliesse.")
+    
+            with st.form("feedback_form", clear_on_submit=True):
+                type_msg = st.selectbox("Type de message :", [
+                    "🔍 Article non trouvé (Lancer l'ajout)", 
+                    "⚠️ Erreur d'information (Prix/Couleur)", 
+                    "💡 Suggestion d'amélioration"
+                ])
+
+                user_comment = st.text_area("Détails (référence manquante, erreur constatée...)")
+
+                feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
+
+                if st.form_submit_button("ENVOYER LE SIGNALEMENT"):
+                    if user_comment:
+                        try:
+                            file_name = None
+    
+                            # --- 1. SI UNE IMAGE EST JOINTE ---
+                            if feedback_img:
+                                import time
+                                file_ext = feedback_img.name.split('.')[-1]
+                                file_name = f"fb_{int(time.time())}.{file_ext}"
+        
+                                with st.spinner("Envoi de l'image..."):
+                                    feedback_img.seek(0)
+                                    supabase.storage.from_("catalogue").upload(
+                                        path=f"feedbacks/{file_name}",
+                                        file=feedback_img.read(),
+                                        file_options={"content-type": f"image/{file_ext}"}
+                                    )
+
+                            # --- 2. INSERTION DANS LA TABLE SQL ---
+                            conn = pg8000.connect(**DB_CONFIG)
+                            cur = conn.cursor()
+    
+                            sql = """
+                                INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) 
+                                VALUES (%s, %s, %s, %s)
+                            """
+                            cur.execute(sql, (type_msg, user_comment, "Nouveau", file_name))
+    
+                            conn.commit()
+                            conn.close()
+                            st.success("✅ Signalement envoyé avec succès !")
+    
+                        except Exception as e:
+                            st.error(f"Erreur lors de l'envoi : {e}")  
 if menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
     search_ref = st.text_input("🔍 Rechercher par référence", placeholder="Ex: 4414")
