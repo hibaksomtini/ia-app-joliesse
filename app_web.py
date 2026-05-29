@@ -12,6 +12,7 @@ import io
 import time
 import pandas as pd
 import csv
+import psycopg2
 
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -30,6 +31,14 @@ DB_CONFIG = {
     "password": st.secrets["DB_PASSWORD"],
     "host": "aws-0-eu-west-1.pooler.supabase.com",
     "database": "postgres",
+    "port": 5432
+}
+# Separate config for psycopg2 (same credentials, different format)
+DB_CONFIG_PSY = {
+    "user": "postgres.mcmwrchllpqokgcdzmhl",
+    "password": st.secrets["DB_PASSWORD"],
+    "host": "aws-0-eu-west-1.pooler.supabase.com",
+    "dbname": "postgres",  # ← psycopg2 uses 'dbname' not 'database'
     "port": 5432
 }
 # --- CHARGEMENT DU MODÈLE IA ---
@@ -362,7 +371,7 @@ elif menu == "🔐 Administration":
                         if all_rows_to_upsert:
                             BATCH_SIZE = 1000
                             total_lignes = len(all_rows_to_upsert)
-    
+
                             progress_bar = st.progress(0.0)
                             status_text = st.empty()
                             errors = []
@@ -372,10 +381,10 @@ elif menu == "🔐 Administration":
                                 conn_batch = None
 
                                 try:
-                                    conn_batch = pg8000.connect(**DB_CONFIG)
+                                    conn_batch = psycopg2.connect(**DB_CONFIG_PSY)
                                     cur_batch = conn_batch.cursor()
 
-                                    # Step 1: Write batch to a temp table via COPY (ultra fast)
+                                    # Step 1: Create temp table
                                     cur_batch.execute("""
                                         CREATE TEMP TABLE tmp_cegid_import (
                                             product_ref VARCHAR(50),
@@ -390,29 +399,29 @@ elif menu == "🔐 Administration":
 
                                     # Step 2: Build CSV buffer
                                     csv_buffer = io.StringIO()
-                                    writer = csv.writer(csv_buffer, delimiter=',', quoting=csv.QUOTE_MINIMAL)
+                                    writer = csv.writer(csv_buffer, delimiter=',', quoting=csv.QUOTE_ALL)
                                     for row in batch:
                                         writer.writerow([
-                                            row[0] or '',   # product_ref
-                                            row[1] or '',   # barcode
-                                            row[2] or '',   # color
-                                            row[3] or '',   # size_label
-                                            row[4] or '',   # depot_stock
-                                            row[5] or 0,    # price
-                                            row[6] or 0,    # stock_qty
+                                            row[0] or '',
+                                            row[1] or '',
+                                            row[2] or '',
+                                            row[3] or '',
+                                            row[4] or '',
+                                            row[5] or 0,
+                                            row[6] or 0,
                                         ])
                                     csv_buffer.seek(0)
 
-                                    # Step 3: COPY into temp table
-                                    copy_sql = """
+                                    # Step 3: COPY via psycopg2 (actually works)
+                                    cur_batch.copy_expert("""
                                         COPY tmp_cegid_import (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
-                                        FROM STDIN WITH (FORMAT CSV)
-                                    """
-                                    cur_batch.execute(copy_sql, stream=csv_buffer)
+                                        FROM STDIN WITH (FORMAT CSV, QUOTE '"')
+                                    """, csv_buffer)
 
-                                    # Step 4: Upsert from temp → real table (single fast statement)
+                                    # Step 4: Upsert from temp → real table
                                     cur_batch.execute("""
-                                        INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
+                                        INSERT INTO cegid_stocks 
+                                            (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
                                         SELECT product_ref, barcode, color, size_label, depot_stock, price, stock_qty
                                         FROM tmp_cegid_import
                                         ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, ''))
@@ -426,6 +435,8 @@ elif menu == "🔐 Administration":
 
                                 except Exception as batch_error:
                                     errors.append(f"Batch {i}-{i+BATCH_SIZE}: {batch_error}")
+                                    if conn_batch:
+                                        conn_batch.rollback()
                                     continue
                                 finally:
                                     if conn_batch:
@@ -434,7 +445,6 @@ elif menu == "🔐 Administration":
                                 progress = min((i + BATCH_SIZE) / total_lignes, 1.0)
                                 progress_bar.progress(progress)
                                 status_text.caption(f"⏳ {min(i + BATCH_SIZE, total_lignes)} / {total_lignes} lignes...")
-                                time.sleep(0.05)
 
                             progress_bar.empty()
                             status_text.empty()

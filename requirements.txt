@@ -9,3 +9,4 @@ pgvector
 streamlit-cropper==0.2.2
 supabase
 openpyxl
+psycopg2-binary
