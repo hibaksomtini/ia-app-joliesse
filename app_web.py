@@ -16,20 +16,20 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # --- CONFIGURATION DE LA PAGE ---
 st.set_page_config(page_title="Joliesse IA - Dashboard", layout="wide")
 
+STORAGE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co/storage/v1/object/public/catalogue/"
+
+SUPABASE_KEY = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
 # Paramètres de connexion
 DB_CONFIG = {
     "user": "postgres.mcmwrchllpqokgcdzmhl",
-    "password": "Joliesse@123456",
+    "password": st.secrets["DB_PASSWORD"],
     "host": "aws-0-eu-west-1.pooler.supabase.com",
     "database": "postgres",
     "port": 6543
 }
-STORAGE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co/storage/v1/object/public/catalogue/"
-
-SUPABASE_URL = "https://mcmwrchllpqokgcdzmhl.supabase.co"
-SUPABASE_KEY = st.secrets["SUPABASE_SERVICE_ROLE_KEY"]
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
 # --- CHARGEMENT DU MODÈLE IA ---
 @st.cache_resource
 def load_model():
@@ -291,7 +291,7 @@ elif menu == "🔐 Administration":
     if not st.session_state["admin_authenticated"]:
         pwd = st.text_input("Code d'accès sécurisé", type="password")
         if st.button("Se connecter"):
-            if pwd == "Joliesse@2026":
+            if pwd == st.secrets["ADMIN_PASSWORD"]:
                 st.session_state["admin_authenticated"] = True
                 st.rerun()
             else: st.error("Accès refusé.")
