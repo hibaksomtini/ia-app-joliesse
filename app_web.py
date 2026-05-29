@@ -202,9 +202,39 @@ if menu == "🔍 Recherche":
                         st.divider()
                         if df_cegid is not None:
                             with st.expander(f"📊 Voir la disponibilité par Dépôt / Magasin ({len(df_cegid)} lignes)"):
-                                st.dataframe(df_variants=df_cegid, use_container_width=True, hide_index=True)
+                                st.dataframe(df_cegid, use_container_width=True, hide_index=True)
                         else:
                             st.caption("ℹ️ Aucune donnée de dépôt trouvée pour cette référence.")
+
+        # --- RE-INTEGRATION FORMULAIRE SIGNALEMENT ---
+        st.divider()
+        with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
+            st.write("Aidez-nous à améliorer le catalogue Joliesse.")
+            with st.form("feedback_form", clear_on_submit=True):
+                type_msg = st.selectbox("Type de message :", ["🔍 Article non trouvé (Lancer l'ajout)", "⚠️ Erreur d'information (Prix/Couleur)", "💡 Suggestion d'amélioration"])
+                user_comment = st.text_area("Détails (référence manquante, erreur constatée...)")
+                feedback_img = st.file_uploader("Joindre une photo (si besoin)", type=['jpg', 'png'])
+
+                if st.form_submit_button("ENVOYER LE SIGNALEMENT"):
+                    if user_comment:
+                        try:
+                            file_name = None
+                            if feedback_img:
+                                file_ext = feedback_img.name.split('.')[-1]
+                                file_name = f"fb_{int(time.time())}.{file_ext}"
+                                with st.spinner("Envoi de l'image..."):
+                                    feedback_img.seek(0)
+                                    supabase.storage.from_("catalogue").upload(path=f"feedbacks/{file_name}", file=feedback_img.read(), file_options={"content-type": f"image/{file_ext}"})
+
+                            conn = pg8000.connect(**DB_CONFIG)
+                            cur = conn.cursor()
+                            sql = "INSERT INTO feedbacks (type_message, commentaire, status, attachment_path) VALUES (%s, %s, %s, %s)"
+                            cur.execute(sql, (type_msg, user_comment, "Nouveau", file_name))
+                            conn.commit()
+                            conn.close()
+                            st.success("✅ Signalement envoyé avec succès !")
+                        except Exception as e:
+                            st.error(f"Erreur lors de l'envoi : {e}")  
 
 elif menu == "📦 Catalogue":
     st.subheader("Explorateur de stock")
@@ -266,97 +296,180 @@ elif menu == "🔐 Administration":
                 st.rerun()
             else: st.error("Accès refusé.")
     else:
-        st.write("### 📊 Importation et Synchronisation Cegid (Nouvelle Structure)")
-        st.info("Traitement automatique des colonnes 'New Couleur', 'Pointure', 'Dépôt stock' et de la colonne quantité.")
+        # --- RESTAURATION DE LA NAVIGATION PAR ONGLETS INTERNES ---
+        admin_tab1, admin_tab2, admin_tab3 = st.tabs(["📊 Synchro Cegid", "📥 Insertion Produits", "📢 Suivi Feedbacks"])
 
-        cegid_files = st.file_uploader("Choisir les fichiers Excel Cegid", type=['xlsx'], accept_multiple_files=True, key="cegid_multi_uploader")
+        # --- ONGLET 1 : SYNCHRONISATION MAILLÉE CEGID ---
+        with admin_tab1:
+            st.write("### 📊 Importation et Synchronisation Cegid (Nouvelle Structure)")
+            st.info("Traitement automatique sécurisé par paquets (batching) des colonnes 'New Couleur', 'Pointure', 'Dépôt stock' et des quantités.")
 
-        if cegid_files:
-            if st.button("🚀 LANCER LA SYNCHRONISATION DES STOCKS", type="primary"):
-                try:
-                    conn = pg8000.connect(**DB_CONFIG)
-                    cur = conn.cursor()
-                    
-                    # Ajout de la colonne stock_qty dans le schéma de la table
-                    cur.execute("""
-                        CREATE TABLE IF NOT EXISTS cegid_stocks (
-                            id SERIAL PRIMARY KEY,
-                            product_ref VARCHAR(50) NOT NULL,
-                            barcode VARCHAR(50),
-                            color VARCHAR(50),
-                            size_label VARCHAR(50),
-                            depot_stock VARCHAR(100),
-                            price NUMERIC(10, 2),
-                            stock_qty NUMERIC(10, 2) DEFAULT 0,
-                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        );
-                    """)
-                    
-                    cur.execute("""
-                        CREATE UNIQUE INDEX IF NOT EXISTS idx_cegid_composite 
-                        ON cegid_stocks (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, ''));
-                    """)
-                    conn.commit()
+            cegid_files = st.file_uploader("Choisir les fichiers Excel Cegid", type=['xlsx'], accept_multiple_files=True, key="cegid_multi_uploader")
 
-                    all_rows_to_upsert = []
-                    for uploaded_file in cegid_files:
-                        with st.spinner(f"Lecture de : {uploaded_file.name}..."):
-                            df = pd.read_excel(uploaded_file)
-                            
-                            # Normalisation des noms de colonnes pour éviter les espaces invisibles
-                            df.columns = [str(c).strip() for c in df.columns]
+            if cegid_files:
+                if st.button("🚀 LANCER LA SYNCHRONISATION DES STOCKS", type="primary"):
+                    try:
+                        conn = pg8000.connect(**DB_CONFIG)
+                        cur = conn.cursor()
+                        
+                        cur.execute("""
+                            CREATE TABLE IF NOT EXISTS cegid_stocks (
+                                id SERIAL PRIMARY KEY,
+                                product_ref VARCHAR(50) NOT NULL,
+                                barcode VARCHAR(50),
+                                color VARCHAR(50),
+                                size_label VARCHAR(50),
+                                depot_stock VARCHAR(100),
+                                price NUMERIC(10, 2),
+                                stock_qty NUMERIC(10, 2) DEFAULT 0,
+                                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                            );
+                        """)
+                        
+                        cur.execute("""
+                            CREATE UNIQUE INDEX IF NOT EXISTS idx_cegid_composite 
+                            ON cegid_stocks (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, ''));
+                        """)
+                        conn.commit()
 
-                            for index, row in df.iterrows():
-                                ref = str(row.get('Code article', '')).strip()
-                                if ref == '' or ref == 'nan': continue
+                        all_rows_to_upsert = []
+                        for uploaded_file in cegid_files:
+                            with st.spinner(f"Lecture de : {uploaded_file.name}..."):
+                                df = pd.read_excel(uploaded_file)
+                                df.columns = [str(c).strip() for c in df.columns]
 
-                                color = str(row.get('New Couleur', 'N/A')).strip()
-                                depot = str(row.get('Dépôt stock', 'Général')).strip()
-                                size = str(row.get('Pointure', 'N/A')).strip()
-                                price_val = row.get('Prix Détail (TTC)')
+                                for index, row in df.iterrows():
+                                    ref = str(row.get('Code article', '')).strip()
+                                    if ref == '' or ref == 'nan': continue
+
+                                    color = str(row.get('New Couleur', 'N/A')).strip()
+                                    depot = str(row.get('Dépôt stock', 'Général')).strip()
+                                    size = str(row.get('Pointure', 'N/A')).strip()
+                                    price_val = row.get('Prix Détail (TTC)')
+                                    
+                                    try:
+                                        price_idx = df.columns.get_loc('Prix Détail (TTC)')
+                                        stock_val = row.iloc[price_idx + 1]
+                                    except:
+                                        stock_val = 0
+
+                                    if color == 'nan' or color == '': color = "N/A"
+                                    if size == 'nan' or size == '': size = "N/A"
+                                    if depot == 'nan' or depot == '': depot = "Général"
+                                    
+                                    final_price = float(price_val) if pd.notna(price_val) else 0.0
+                                    final_stock = float(stock_val) if pd.notna(stock_val) else 0.0
+                                    
+                                    all_rows_to_upsert.append((ref, None, color, size, depot, final_price, final_stock))
+
+                        if all_rows_to_upsert:
+                            with st.spinner(f"Mise à jour de la base de données ({len(all_rows_to_upsert)} lignes)..."):
+                                BATCH_SIZE = 1000
                                 
-                                # --- RECHERCHE DYNAMIQUE DE LA COLONNE STOCK QTY ---
-                                # On cherche la valeur numérique juste après le prix si aucun nom de colonne n'est défini
-                                try:
-                                    price_idx = df.columns.get_loc('Prix Détail (TTC)')
-                                    stock_val = row.iloc[price_idx + 1] # Colonne F ou G d'après les images
-                                except:
-                                    stock_val = 0
+                                sql_upsert = """
+                                    INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                    ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, '')) 
+                                    DO UPDATE SET 
+                                        price = EXCLUDED.price,
+                                        stock_qty = EXCLUDED.stock_qty,
+                                        updated_at = CURRENT_TIMESTAMP;
+                                """
+                                
+                                for i in range(0, len(all_rows_to_upsert), BATCH_SIZE):
+                                    batch = all_rows_to_upsert[i:i + BATCH_SIZE]
+                                    cur.executemany(sql_upsert, batch)
+                                    conn.commit()
+                                    
+                                st.success(f"✅ Terminé avec succès ! {len(all_rows_to_upsert)} lignes synchronisées par paquets.")
+                        
+                        conn.close()
+                        time.sleep(1.5)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Erreur d'intégration : {e}")
 
-                                if color == 'nan' or color == '': color = "N/A"
-                                if size == 'nan' or size == '': size = "N/A"
-                                if depot == 'nan' or depot == '': depot = "Général"
-                                
-                                final_price = float(price_val) if pd.notna(price_val) else 0.0
-                                final_stock = float(stock_val) if pd.notna(stock_val) else 0.0
-                                
-                                all_rows_to_upsert.append((ref, None, color, size, depot, final_price, final_stock))
+        # --- ONGLET 2 : FORMULAIRE D'INSERTION UNIQUE SMART UPLOAD ---
+        with admin_tab2:
+            st.write("### 🗃️ Gestion du Stock (Import Unique avec Embedding IA)")
+            with st.form("admin_smart_upload", clear_on_submit=True):
+                new_ref = st.text_input("Référence de l'article (ex: 4420)")
+                new_file = st.file_uploader("Ajouter une image", type=['jpg', 'jpeg', 'png'])
+                submitted = st.form_submit_button("LANCER L'INDEXATION")
 
-                    if all_rows_to_upsert:
-                        with st.spinner(f"Mise à jour de la base de données ({len(all_rows_to_upsert)} lignes)..."):
-                            # Définition d'une taille de lot (batch) pour ne pas saturer la mémoire
-                            BATCH_SIZE = 1000
-                            
-                            sql_upsert = """
-                                INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, '')) 
-                                DO UPDATE SET 
-                                    price = EXCLUDED.price,
-                                    stock_qty = EXCLUDED.stock_qty,
-                                    updated_at = CURRENT_TIMESTAMP;
-                            """
-                            
-                            # Découpage et exécution par paquets de 1000 avec validation (commit) intermédiaire
-                            for i in range(0, len(all_rows_to_upsert), BATCH_SIZE):
-                                batch = all_rows_to_upsert[i:i + BATCH_SIZE]
-                                cur.executemany(sql_upsert, batch)
-                                conn.commit() # Valide le paquet actuel pour libérer la mémoire du serveur
-                                
-                            st.success(f"✅ Terminé avec succès ! {len(all_rows_to_upsert)} lignes synchronisées par paquets.")
-                    
-                    conn.close()
-                    time.sleep(1.5)
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Erreur d'intégration : {e}")
+            if submitted:
+                if new_ref and new_file:
+                    try:
+                        image = Image.open(new_file).convert("RGB")
+                        with st.spinner("Analyse CLIP..."):
+                            embedding = model.encode(image).tolist()
+                        
+                        file_ext = new_file.name.split('.')[-1]
+                        unique_name = f"{new_ref}_{int(time.time())}.{file_ext}"
+
+                        buffer = io.BytesIO()
+                        image.save(buffer, format="JPEG", quality=85)
+                        buffer_data = buffer.getvalue()
+
+                        conn = pg8000.connect(**DB_CONFIG)
+                        cur = conn.cursor()
+                        cur.execute("SELECT image_paths FROM products WHERE product_ref = %s", (new_ref,))
+                        row = cur.fetchone()
+
+                        action_type = ""
+                        if row:
+                            current_paths = row[0] if row[0] else ""
+                            updated_paths = f"{current_paths}|{unique_name}" if current_paths else unique_name
+                            sql = "UPDATE products SET image_paths = %s, embedding = %s WHERE product_ref = %s"
+                            cur.execute(sql, (updated_paths, str(embedding), new_ref))
+                            action_type = "Mise à jour (Image ajoutée)"
+                        else:
+                            sql = "INSERT INTO products (product_ref, image_paths, embedding) VALUES (%s, %s, %s)"
+                            cur.execute(sql, (new_ref, unique_name, str(embedding)))
+                            action_type = "Nouveau Product Créé"
+
+                        supabase.storage.from_("catalogue").upload(path=unique_name, file=buffer_data, file_options={"content-type": "image/jpeg"})
+                        conn.commit()
+                        conn.close()
+
+                        new_entry = {'Heure': time.strftime("%H:%M:%S"), 'Référence': new_ref, 'Action': action_type, 'Fichier': unique_name}
+                        st.session_state['upload_history'].insert(0, new_entry)
+                        st.session_state['upload_history'] = st.session_state['upload_history'][:10]
+                        st.success(f"✅ Article {new_ref} traité avec succès !")
+                    except Exception as e:
+                        st.error(f"Erreur technique : {e}")
+                else:
+                    st.warning("Veuillez remplir la référence ET choisir une image.")
+
+            if st.session_state['upload_history']:
+                st.divider()
+                st.subheader("⏱️ Historique Récent")
+                last = st.session_state['upload_history'][0]
+                if "Nouveau" in last['Action']:
+                    st.success(f"🆕 **Nouveau produit créé** : Réf {last['Référence']}")
+                else:
+                    st.info(f"🔄 **Image ajoutée** à la référence : {last['Référence']}")
+
+                df_hist = pd.DataFrame(st.session_state['upload_history'])
+                st.dataframe(df_hist, use_container_width=True, hide_index=True)
+
+        # --- ONGLET 3 : SUIVI MODÉRATEUR DES MESSAGES / ALERTE FEEDBACKS ---
+        with admin_tab3:
+            st.write("### 📩 Messages et Alertes d'Erreurs Magasins")
+            try:
+                conn = pg8000.connect(**DB_CONFIG)
+                df_fb = pd.read_sql("SELECT id, created_at, type_message, commentaire, status, attachment_path FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC", conn)
+                if not df_fb.empty:
+                    st.dataframe(df_fb, use_container_width=True, hide_index=True)
+                    if st.button("Marquer ces messages comme 'Lus'"):
+                        cur = conn.cursor()
+                        cur.execute("UPDATE feedbacks SET status = 'Lu' WHERE status = 'Nouveau'")
+                        conn.commit()
+                        st.success("Messages archivés !")
+                        time.sleep(1)
+                        st.rerun()
+                else:
+                    st.info("Aucun nouveau message.")
+                conn.close()
+            except Exception as e:
+                st.info("La table des messages est en attente ou vide.")
