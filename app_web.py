@@ -334,7 +334,9 @@ elif menu == "🔐 Administration":
 
                     if all_rows_to_upsert:
                         with st.spinner(f"Mise à jour de la base de données ({len(all_rows_to_upsert)} lignes)..."):
-                            # On met à jour le prix ET la quantité de stock sur conflit composite
+                            # Définition d'une taille de lot (batch) pour ne pas saturer la mémoire
+                            BATCH_SIZE = 1000
+                            
                             sql_upsert = """
                                 INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
                                 VALUES (%s, %s, %s, %s, %s, %s, %s)
@@ -344,9 +346,14 @@ elif menu == "🔐 Administration":
                                     stock_qty = EXCLUDED.stock_qty,
                                     updated_at = CURRENT_TIMESTAMP;
                             """
-                            cur.executemany(sql_upsert, all_rows_to_upsert)
-                            conn.commit()
-                            st.success(f"✅ Terminé ! {len(all_rows_to_upsert)} lignes synchronisées avec les stocks par dépôt.")
+                            
+                            # Découpage et exécution par paquets de 1000 avec validation (commit) intermédiaire
+                            for i in range(0, len(all_rows_to_upsert), BATCH_SIZE):
+                                batch = all_rows_to_upsert[i:i + BATCH_SIZE]
+                                cur.executemany(sql_upsert, batch)
+                                conn.commit() # Valide le paquet actuel pour libérer la mémoire du serveur
+                                
+                            st.success(f"✅ Terminé avec succès ! {len(all_rows_to_upsert)} lignes synchronisées par paquets.")
                     
                     conn.close()
                     time.sleep(1.5)
