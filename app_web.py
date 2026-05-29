@@ -364,7 +364,7 @@ elif menu == "🔐 Administration":
 
                         if all_rows_to_upsert:
                             with st.spinner(f"Mise à jour de la base de données ({len(all_rows_to_upsert)} lignes)..."):
-                                # On baisse la taille pour ne jamais saturer le pooler Supabase
+                                # Taille réduite pour ne jamais saturer le pooler Supabase
                                 BATCH_SIZE = 200 
                                 total_lignes = len(all_rows_to_upsert)
                                 
@@ -378,28 +378,31 @@ elif menu == "🔐 Administration":
                                         updated_at = CURRENT_TIMESTAMP;
                                 """
                                 
-                                # Barre de progression pour suivre l'avancement en direct
+                                # Ajout d'une barre de progression visuelle pour suivre l'avancement
                                 progress_bar = st.progress(0.0)
                                 status_text = st.empty()
 
+                                # On boucle et on applique un commit PHYSIQUE à chaque paquet
                                 for i in range(0, total_lignes, BATCH_SIZE):
                                     batch = all_rows_to_upsert[i:i + BATCH_SIZE]
                                     
-                                    # Exécution et commit immédiat du paquet
+                                    # Exécution du micro-paquet
                                     cur.executemany(sql_upsert, batch)
+                                    # CRITIQUE : Libère immédiatement le verrou et réinitialise le compteur de timeout Postgres
                                     conn.commit() 
                                     
-                                    # Mise à jour de l'interface
+                                    # Mise à jour de l'avancement sur l'interface Streamlit
                                     progress = min((i + BATCH_SIZE) / total_lignes, 1.0)
                                     progress_bar.progress(progress)
-                                    status_text.caption(f"⏳ Synchronisation : {min(i + BATCH_SIZE, total_lignes)} / {total_lignes} lignes...")
+                                    status_text.caption(f"⏳ Traitement : {min(i + BATCH_SIZE, total_lignes)} / {total_lignes} lignes synchronisées...")
                                     
-                                    # Micro-pause pour laisser respirer le pooler Supabase
-                                    time.sleep(0.1)
+                                    # Micro-pause pour laisser respirer le routeur réseau AWS / Supabase
+                                    time.sleep(0.05)
                                     
+                                # Nettoyage des widgets temporaires
                                 progress_bar.empty()
                                 status_text.empty()
-                                st.success(f"✅ Terminé avec succès ! {total_lignes} lignes synchronisées sans timeout.")
+                                st.success(f"✅ Synchronisation réussie ! {total_lignes} lignes de stock enregistrées sans timeout.")
                         
                         conn.close()
                         time.sleep(1.5)
