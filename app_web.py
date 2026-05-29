@@ -365,6 +365,10 @@ elif menu == "📦 Catalogue":
     except Exception as e:
         st.error(f"Impossible de charger le catalogue : {e}")
 
+# ==============================================================================
+# elif menu == "🔐 Administration":
+# ==============================================================================
+
 elif menu == "🔐 Administration":
     if 'upload_history' not in st.session_state:
         st.session_state['upload_history'] = []
@@ -377,7 +381,7 @@ elif menu == "🔐 Administration":
     if not st.session_state["admin_authenticated"]:
         pwd = st.text_input("Code d'accès sécurisé", type="password")
         if st.button("Se connecter"):
-            if pwd == "Joliesse@2026":
+            if pwd == "Joliesse2026":
                 st.session_state["admin_authenticated"] = True
                 st.rerun()
             else:
@@ -392,78 +396,101 @@ elif menu == "🔐 Administration":
                 st.rerun()
 
         st.divider()
-        st.write("### 📊 Importation et Synchronisation Cegid (Optimisée)")
-        st.info("Glissez vos fichiers Excel. Le traitement est désormais optimisé en bloc.")
 
-        cegid_files = st.file_uploader("Choisir les fichiers Excel Cegid", type=['xlsx'], accept_multiple_files=True, key="cegid_multi_uploader")
+        st.write("### 📊 Importation et Synchronisation Cegid (Nouvelle Structure)")
+        st.info("Glissez vos nouveaux fichiers Excel avec les colonnes 'New Couleur', 'Pointure' et 'Dépôt stock'.")
+
+        cegid_files = st.file_uploader(
+            "Choisir les fichiers Excel Cegid", 
+            type=['xlsx'], 
+            accept_multiple_files=True,
+            key="cegid_multi_uploader"
+        )
 
         if cegid_files:
             if st.button("🚀 LANCER LA SYNCHRONISATION CEGID", type="primary"):
                 try:
                     conn = pg8000.connect(**DB_CONFIG)
                     cur = conn.cursor()
+                    
+                    # Mise à jour de la table : suppression de la contrainte UNIQUE sur barcode
+                    # Et création d'un index unique composite pour gérer l'upsert proprement
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS cegid_stocks (
                             id SERIAL PRIMARY KEY,
                             product_ref VARCHAR(50) NOT NULL,
-                            barcode VARCHAR(50) UNIQUE NOT NULL,
+                            barcode VARCHAR(50),
                             color VARCHAR(50),
                             size_label VARCHAR(50),
+                            depot_stock VARCHAR(100),
                             price NUMERIC(10, 2),
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         );
                     """)
+                    
+                    # On crée un index unique composite s'il n'existe pas déjà
+                    cur.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS idx_cegid_composite 
+                        ON cegid_stocks (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, ''));
+                    """)
                     conn.commit()
 
                     all_rows_to_upsert = []
+                    
                     for uploaded_file in cegid_files:
                         with st.spinner(f"Préparation de : {uploaded_file.name}..."):
-                            df = pd.read_excel(uploaded_file, dtype={'Code article': str, 'Code-barres article': str, 'Couleur': str, 'Libellé dimension': str})
-                            current_parent_price = 0.0
-
+                            # Lecture brute des nouvelles colonnes observées sur image_f07f66.png et image_f07f2d.png
+                            df = pd.read_excel(uploaded_file, dtype={
+                                'Code article': str,
+                                'New Couleur': str,
+                                'Pointure': str,
+                                'Dépôt stock': str
+                            })
+                            
                             for index, row in df.iterrows():
                                 ref = str(row.get('Code article', '')).strip()
-                                barcode = str(row.get('Code-barres article', '')).strip()
-                                color = str(row.get('Couleur', '')).strip()
-                                size = str(row.get('Libellé dimension', '')).strip()
+                                color = str(row.get('New Couleur', '')).strip()
+                                depot = str(row.get('Dépôt stock', '')).strip()
                                 price_val = row.get('Prix Détail (TTC)')
+                                
+                                # Gestion flexible de la taille/pointure
+                                size = str(row.get('Pointure', '')).strip()
+                                if size == 'nan' or size == '':
+                                    size = "N/A"
 
-                                if (barcode == '' or barcode == 'nan') and ref != '' and ref != 'nan':
-                                    if pd.notna(price_val):
-                                        current_parent_price = float(price_val)
-                                    continue
-
-                                if barcode == '' or barcode == 'nan' or ref == '' or ref == 'nan':
+                                # Si la ligne est complètement vide ou invalide, on passe
+                                if ref == '' or ref == 'nan':
                                     continue
 
                                 if color == 'nan' or color == '': color = "N/A"
-                                if size == 'nan' or size == '': size = "N/A"
+                                if depot == 'nan' or depot == '': depot = "Général"
                                 
-                                final_price = float(price_val) if pd.notna(price_val) else current_parent_price
-                                all_rows_to_upsert.append((ref, barcode, color, size, final_price))
+                                final_price = float(price_val) if pd.notna(price_val) else 0.0
+                                
+                                # On passe None pour le barcode puisqu'il n'est plus fourni
+                                all_rows_to_upsert.append((ref, None, color, size, depot, final_price))
 
                     if all_rows_to_upsert:
-                        with st.spinner(f"Envoi de {len(all_rows_to_upsert)} déclinaisons à la base..."):
+                        with st.spinner(f"Envoi de {len(all_rows_to_upsert)} lignes de stock à la base..."):
+                            # Utilisation de l'index composite pour éviter les doublons au chargement
                             sql_upsert = """
-                                INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, price)
-                                VALUES (%s, %s, %s, %s, %s)
-                                ON CONFLICT (barcode) 
+                                INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price)
+                                VALUES (%s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, '')) 
                                 DO UPDATE SET 
-                                    product_ref = EXCLUDED.product_ref,
-                                    color = EXCLUDED.color,
-                                    size_label = EXCLUDED.size_label,
                                     price = EXCLUDED.price,
                                     updated_at = CURRENT_TIMESTAMP;
                             """
                             cur.executemany(sql_upsert, all_rows_to_upsert)
                             conn.commit()
-                            st.success(f"✅ Synchronisation réussie ! {len(all_rows_to_upsert)} lignes traitées.")
+                            st.success(f"✅ Synchronisation réussie ! {len(all_rows_to_upsert)} lignes de stock synchronisées.")
                     else:
-                        st.warning("⚠️ Aucun code-barres valide trouvé.")
+                        st.warning("⚠️ Aucune ligne valide trouvée dans les fichiers chargés.")
 
                     conn.close()
                     time.sleep(2)
                     st.rerun()
+
                 except Exception as e:
                     st.error(f"Erreur lors de l'intégration : {e}")
 
@@ -548,4 +575,4 @@ elif menu == "🔐 Administration":
                 st.info(f"🔄 **Image ajoutée** à la référence : {last['Référence']}")
 
             df_hist = pd.DataFrame(st.session_state['upload_history'])
-            st.dataframe(df_hist, use_container_width=True, hide_index=True)
+            st.dataframe(df_hist, use_container_width=True, hide_indesx=True)
