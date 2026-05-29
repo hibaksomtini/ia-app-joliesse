@@ -28,7 +28,7 @@ DB_CONFIG = {
     "password": st.secrets["DB_PASSWORD"],
     "host": "aws-0-eu-west-1.pooler.supabase.com",
     "database": "postgres",
-    "port": 6543
+    "port": 5432
 }
 # --- CHARGEMENT DU MODÈLE IA ---
 @st.cache_resource
@@ -45,7 +45,8 @@ def get_cegid_data_and_colors(product_ref):
     try:
         conn = pg8000.connect(**DB_CONFIG)
         cur = conn.cursor()
-        
+        cur.execute("SET statement_timeout = '60s'")
+        conn.commit()
         query = """
             SELECT depot_stock, color, size_label, price, stock_qty 
             FROM cegid_stocks 
@@ -357,46 +358,58 @@ elif menu == "🔐 Administration":
                                     all_rows_to_upsert.append((ref, None, color, size, depot, final_price, final_stock))
 
                         if all_rows_to_upsert:
-                            with st.spinner(f"Mise à jour de la base de données ({len(all_rows_to_upsert)} lignes)..."):
-                                # Taille réduite pour ne jamais saturer le pooler Supabase
-                                BATCH_SIZE = 200 
-                                total_lignes = len(all_rows_to_upsert)
-                                
-                                sql_upsert = """
-                                    INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
-                                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                    ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, '')) 
-                                    DO UPDATE SET 
-                                        price = EXCLUDED.price,
-                                        stock_qty = EXCLUDED.stock_qty,
-                                        updated_at = CURRENT_TIMESTAMP;
-                                """
-                                
-                                # Ajout d'une barre de progression visuelle pour suivre l'avancement
-                                progress_bar = st.progress(0.0)
-                                status_text = st.empty()
+                            BATCH_SIZE = 50  # Reduce from 200 to 50
+                            total_lignes = len(all_rows_to_upsert)
+    
+                            sql_upsert = """
+                                INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, '')) 
+                                DO UPDATE SET 
+                                    price = EXCLUDED.price,
+                                    stock_qty = EXCLUDED.stock_qty,
+                                    updated_at = CURRENT_TIMESTAMP;
+                            """
+    
+                            progress_bar = st.progress(0.0)
+                            status_text = st.empty()
+                            errors = []
 
-                                # On boucle et on applique un commit PHYSIQUE à chaque paquet
-                                for i in range(0, total_lignes, BATCH_SIZE):
-                                    batch = all_rows_to_upsert[i:i + BATCH_SIZE]
-                                    
-                                    # Exécution du micro-paquet
-                                    cur.executemany(sql_upsert, batch)
-                                    # CRITIQUE : Libère immédiatement le verrou et réinitialise le compteur de timeout Postgres
-                                    conn.commit() 
-                                    
-                                    # Mise à jour de l'avancement sur l'interface Streamlit
-                                    progress = min((i + BATCH_SIZE) / total_lignes, 1.0)
-                                    progress_bar.progress(progress)
-                                    status_text.caption(f"⏳ Traitement : {min(i + BATCH_SIZE, total_lignes)} / {total_lignes} lignes synchronisées...")
-                                    
-                                    # Micro-pause pour laisser respirer le routeur réseau AWS / Supabase
-                                    time.sleep(0.05)
-                                    
-                                # Nettoyage des widgets temporaires
-                                progress_bar.empty()
-                                status_text.empty()
-                                st.success(f"✅ Synchronisation réussie ! {total_lignes} lignes de stock enregistrées sans timeout.")
+                            for i in range(0, total_lignes, BATCH_SIZE):
+                                batch = all_rows_to_upsert[i:i + BATCH_SIZE]
+        
+                                # Fresh connection per batch — avoids pooler timeout
+                                conn_batch = None
+                                try:
+                                    conn_batch = pg8000.connect(**DB_CONFIG)
+                                    cur_batch = conn_batch.cursor()
+                                    cur_batch.execute("SET statement_timeout = '60s'")  # per session
+                                    cur_batch.executemany(sql_upsert, batch)
+                                    conn_batch.commit()
+
+                                except Exception as batch_error:
+                                    errors.append(f"Batch {i}-{i+BATCH_SIZE}: {batch_error}")
+                                    # Skip this batch, continue with the next
+                                    continue
+
+                                finally:
+                                    if conn_batch:
+                                        conn_batch.close()
+
+                                progress = min((i + BATCH_SIZE) / total_lignes, 1.0)
+                                progress_bar.progress(progress)
+                                status_text.caption(f"⏳ {min(i + BATCH_SIZE, total_lignes)} / {total_lignes} lignes...")
+                                time.sleep(0.1)  # Slightly longer pause
+
+                            progress_bar.empty()
+                            status_text.empty()
+
+                            if errors:
+                                st.warning(f"⚠️ Terminé avec {len(errors)} erreur(s) :")
+                                for err in errors:
+                                    st.caption(err)
+                            else:
+                                st.success(f"✅ {total_lignes} lignes synchronisées sans erreur.")
                         
                         conn.close()
                         time.sleep(1.5)
