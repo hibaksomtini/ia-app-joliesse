@@ -11,6 +11,8 @@ from supabase import create_client, Client
 import io
 import time
 import pandas as pd
+import csv
+
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # --- CONFIGURATION DE LA PAGE ---
@@ -358,18 +360,8 @@ elif menu == "🔐 Administration":
                                     all_rows_to_upsert.append((ref, None, color, size, depot, final_price, final_stock))
 
                         if all_rows_to_upsert:
-                            BATCH_SIZE = 50  # Reduce from 200 to 50
+                            BATCH_SIZE = 1000
                             total_lignes = len(all_rows_to_upsert)
-    
-                            sql_upsert = """
-                                INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, '')) 
-                                DO UPDATE SET 
-                                    price = EXCLUDED.price,
-                                    stock_qty = EXCLUDED.stock_qty,
-                                    updated_at = CURRENT_TIMESTAMP;
-                            """
     
                             progress_bar = st.progress(0.0)
                             status_text = st.empty()
@@ -377,21 +369,64 @@ elif menu == "🔐 Administration":
 
                             for i in range(0, total_lignes, BATCH_SIZE):
                                 batch = all_rows_to_upsert[i:i + BATCH_SIZE]
-        
-                                # Fresh connection per batch — avoids pooler timeout
                                 conn_batch = None
+
                                 try:
                                     conn_batch = pg8000.connect(**DB_CONFIG)
                                     cur_batch = conn_batch.cursor()
-                                    cur_batch.execute("SET statement_timeout = '60s'")  # per session
-                                    cur_batch.executemany(sql_upsert, batch)
+
+                                    # Step 1: Write batch to a temp table via COPY (ultra fast)
+                                    cur_batch.execute("""
+                                        CREATE TEMP TABLE tmp_cegid_import (
+                                            product_ref VARCHAR(50),
+                                            barcode VARCHAR(50),
+                                            color VARCHAR(50),
+                                            size_label VARCHAR(50),
+                                            depot_stock VARCHAR(100),
+                                            price NUMERIC(10,2),
+                                            stock_qty NUMERIC(10,2)
+                                        ) ON COMMIT DROP;
+                                    """)
+
+                                    # Step 2: Build CSV buffer
+                                    csv_buffer = io.StringIO()
+                                    writer = csv.writer(csv_buffer, delimiter=',', quoting=csv.QUOTE_MINIMAL)
+                                    for row in batch:
+                                        writer.writerow([
+                                            row[0] or '',   # product_ref
+                                            row[1] or '',   # barcode
+                                            row[2] or '',   # color
+                                            row[3] or '',   # size_label
+                                            row[4] or '',   # depot_stock
+                                            row[5] or 0,    # price
+                                            row[6] or 0,    # stock_qty
+                                        ])
+                                    csv_buffer.seek(0)
+
+                                    # Step 3: COPY into temp table
+                                    copy_sql = """
+                                        COPY tmp_cegid_import (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
+                                        FROM STDIN WITH (FORMAT CSV)
+                                    """
+                                    cur_batch.execute(copy_sql, stream=csv_buffer)
+
+                                    # Step 4: Upsert from temp → real table (single fast statement)
+                                    cur_batch.execute("""
+                                        INSERT INTO cegid_stocks (product_ref, barcode, color, size_label, depot_stock, price, stock_qty)
+                                        SELECT product_ref, barcode, color, size_label, depot_stock, price, stock_qty
+                                        FROM tmp_cegid_import
+                                        ON CONFLICT (product_ref, COALESCE(color, ''), COALESCE(size_label, ''), COALESCE(depot_stock, ''))
+                                        DO UPDATE SET
+                                            price = EXCLUDED.price,
+                                            stock_qty = EXCLUDED.stock_qty,
+                                            updated_at = CURRENT_TIMESTAMP;
+                                    """)
+
                                     conn_batch.commit()
 
                                 except Exception as batch_error:
                                     errors.append(f"Batch {i}-{i+BATCH_SIZE}: {batch_error}")
-                                    # Skip this batch, continue with the next
                                     continue
-
                                 finally:
                                     if conn_batch:
                                         conn_batch.close()
@@ -399,17 +434,17 @@ elif menu == "🔐 Administration":
                                 progress = min((i + BATCH_SIZE) / total_lignes, 1.0)
                                 progress_bar.progress(progress)
                                 status_text.caption(f"⏳ {min(i + BATCH_SIZE, total_lignes)} / {total_lignes} lignes...")
-                                time.sleep(0.1)  # Slightly longer pause
+                                time.sleep(0.05)
 
                             progress_bar.empty()
                             status_text.empty()
 
                             if errors:
-                                st.warning(f"⚠️ Terminé avec {len(errors)} erreur(s) :")
+                                st.warning(f"⚠️ Terminé avec {len(errors)} erreur(s):")
                                 for err in errors:
                                     st.caption(err)
                             else:
-                                st.success(f"✅ {total_lignes} lignes synchronisées sans erreur.")
+                                st.success(f"✅ {total_lignes} lignes synchronisées !")
                         
                         conn.close()
                         time.sleep(1.5)
