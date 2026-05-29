@@ -82,45 +82,39 @@ def get_cegid_data_and_colors(product_ref):
 def run_search(processed_image):
     embedding = model.encode(processed_image, convert_to_numpy=True)
     norm = np.linalg.norm(embedding)
-    query_vec = (embedding / norm).flatten()
+    query_vec = (embedding / norm).flatten().tolist()
 
     try:
         conn = pg8000.connect(**DB_CONFIG)
         cur = conn.cursor()
-        cur.execute("SELECT product_ref, price, image_paths, embedding, colors FROM products")
+
+        # pgvector does the similarity search in the DB — no Python loop needed
+        query = """
+            SELECT product_ref, price, image_paths, colors,
+                   1 - (embedding_vec <=> %s::vector) AS score
+            FROM products
+            WHERE embedding_vec IS NOT NULL
+            ORDER BY embedding_vec <=> %s::vector
+            LIMIT 10
+        """
+        vec_str = f"[{','.join(map(str, query_vec))}]"
+        cur.execute(query, (vec_str, vec_str))
         rows = cur.fetchall()
         conn.close()
 
         results = []
-        st.write(f"Vérification de {len(rows)} produits...")
         for row in rows:
-            if len(row) < 5: continue
-            ref, price, img_data, db_emb, colors = row
-            if db_emb is None: continue 
+            ref, price, img_data, colors, score = row
+            img_list = str(img_data).split('|') if img_data else []
+            results.append({
+                "ref": ref,
+                "score": float(score),
+                "price": float(price) if price is not None else 0.0,
+                "images": img_list,
+                "colors": colors if colors else "N/A"
+            })
+        return results
 
-            try:
-                if isinstance(db_emb, str):
-                    import json
-                    db_emb = json.loads(db_emb.replace("'", '"'))
-
-                db_vec = np.array(db_emb).flatten()
-                if db_vec.shape[0] != 768 or np.all(db_vec == 0): continue
-
-                score = np.dot(query_vec, db_vec) / (np.linalg.norm(query_vec) * np.linalg.norm(db_vec))
-
-                if score > 0.1: 
-                    img_list = str(img_data).split('|') if img_data else []
-                    results.append({
-                        "ref": ref, 
-                        "score": float(score), 
-                        "price": float(price) if price is not None else 0.0,
-                        "images": img_list,
-                        "colors": colors if colors else "N/A"
-                    })
-            except Exception as e:
-                continue
-
-        return sorted(results, key=lambda x: x["score"], reverse=True)[:10]
     except Exception as e:
         st.error(f"Erreur de connexion base de données : {e}")
         return []
@@ -477,9 +471,14 @@ elif menu == "🔐 Administration":
         # --- ONGLET 3 : SUIVI MODÉRATEUR DES MESSAGES / ALERTE FEEDBACKS ---
         with admin_tab3:
             st.write("### 📩 Messages et Alertes d'Erreurs Magasins")
+            conn = None
             try:
                 conn = pg8000.connect(**DB_CONFIG)
-                df_fb = pd.read_sql("SELECT id, created_at, type_message, commentaire, status, attachment_path FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC", conn)
+                df_fb = pd.read_sql(
+                    "SELECT id, created_at, type_message, commentaire, status, attachment_path "
+                    "FROM feedbacks WHERE status = 'Nouveau' ORDER BY id DESC",
+                    conn
+                )
                 if not df_fb.empty:
                     st.dataframe(df_fb, use_container_width=True, hide_index=True)
                     if st.button("Marquer ces messages comme 'Lus'"):
@@ -491,6 +490,8 @@ elif menu == "🔐 Administration":
                         st.rerun()
                 else:
                     st.info("Aucun nouveau message.")
-                conn.close()
             except Exception as e:
-                st.info("La table des messages est en attente ou vide.")
+                st.error(f"Erreur lors du chargement des feedbacks : {e}")
+            finally:
+                if conn:
+                    conn.close()  # Always runs, even if an exception occurred
