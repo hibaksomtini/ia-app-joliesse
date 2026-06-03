@@ -89,26 +89,39 @@ def get_cegid_data_and_colors(product_ref):
         return None, [], None
 
 
+MIN_SCORE = 0.60  # Minimum match threshold — raise to 0.70 if results are still noisy
+
 def run_search(processed_image):
     embedding = model.encode(processed_image, convert_to_numpy=True)
     norm = np.linalg.norm(embedding)
+    if norm == 0:
+        st.error("Impossible d'analyser cette image.")
+        return []
     query_vec = (embedding / norm).flatten().tolist()
+    vec_str = f"[{','.join(map(str, query_vec))}]"
 
     try:
         conn = pg8000.connect(**DB_CONFIG)
         cur = conn.cursor()
         query = """
-            SELECT product_ref, price, image_paths, colors,
-                   1 - (embedding_vec <=> %s::vector) AS score
+            SELECT
+                product_ref,
+                price,
+                image_paths,
+                colors,
+                ROUND(CAST(1 - (embedding_vec <=> %s::vector) AS numeric), 4) AS score
             FROM products
             WHERE embedding_vec IS NOT NULL
+              AND 1 - (embedding_vec <=> %s::vector) >= %s
             ORDER BY embedding_vec <=> %s::vector
             LIMIT 10
         """
-        vec_str = f"[{','.join(map(str, query_vec))}]"
-        cur.execute(query, (vec_str, vec_str))
+        cur.execute(query, (vec_str, vec_str, MIN_SCORE, vec_str))
         rows = cur.fetchall()
         conn.close()
+
+        if not rows:
+            return []
 
         results = []
         for row in rows:
@@ -124,7 +137,7 @@ def run_search(processed_image):
         return results
 
     except Exception as e:
-        st.error(f"Erreur de connexion base de données : {e}")
+        st.error(f"Erreur de recherche : {e}")
         return []
 
 
@@ -178,44 +191,50 @@ if menu == "🔍 Recherche":
         if 'results' in st.session_state:
             st.divider()
             st.subheader("Résultats de l'analyse")
-            for res in st.session_state['results']:
-                with st.container(border=True):
-                    c1, c2 = st.columns([1, 2])
-                    with c1:
-                        if res.get('images') and len(res['images']) > 0:
-                            st.image(STORAGE_URL + res['images'][0].strip(), width='stretch')
-                        else:
-                            st.warning("Pas d'image")
-                    with c2:
-                        st.write(f"### REF: {res['ref']}")
-                        df_cegid, cegid_colors, first_cegid_price = get_cegid_data_and_colors(res['ref'])
 
-                        couleur_a_afficher = (
-                            res['colors'] if res.get('colors') and res['colors'] != "Non spécifié"
-                            else (", ".join(cegid_colors) if cegid_colors else "Non spécifiée")
-                        )
-                        st.write(f"🎨 **Couleur(s) dispo :** {couleur_a_afficher}")
-
-                        prix_a_afficher = (
-                            float(res['price']) if res.get('price') and float(res['price']) > 0
-                            else first_cegid_price
-                        )
-                        st.write(f"Prix : :green[{f'{prix_a_afficher:.2f} DT' if prix_a_afficher else 'Non défini'}]")
-
-                        if df_cegid is not None:
-                            total_stock = df_cegid['Stock Qty'].sum()
-                            st.write(f"📦 **Stock total disponible :** {total_stock} paires")
-
-                        score_val = res.get('score', 0.0)
-                        st.caption(f"Match : {score_val*100:.1f}%")
-                        st.progress(min(max(float(score_val), 0.0), 1.0))
-                        st.divider()
-
-                        if df_cegid is not None:
-                            with st.expander(f"📊 Voir la disponibilité par Dépôt / Magasin ({len(df_cegid)} lignes)"):
-                                st.dataframe(df_cegid, use_container_width=True, hide_index=True)
-                        else:
-                            st.caption("ℹ️ Aucune donnée de dépôt trouvée pour cette référence.")
+            if not st.session_state['results']:
+                st.warning("⚠️ Aucune correspondance trouvée avec un score suffisant.")
+                st.caption(f"Le seuil de confiance est à {MIN_SCORE*100:.0f}%. "
+                           "Essayez le recadrage précis pour isoler la chaussure.")
+            else:
+                for res in st.session_state['results']:
+                    with st.container(border=True):
+                        c1, c2 = st.columns([1, 2])
+                        with c1:
+                            if res.get('images') and len(res['images']) > 0:
+                                st.image(STORAGE_URL + res['images'][0].strip(), width='stretch')
+                            else:
+                                st.warning("Pas d'image")
+                        with c2:
+                            st.write(f"### REF: {res['ref']}")
+                            df_cegid, cegid_colors, first_cegid_price = get_cegid_data_and_colors(res['ref'])
+    
+                            couleur_a_afficher = (
+                                res['colors'] if res.get('colors') and res['colors'] != "Non spécifié"
+                                else (", ".join(cegid_colors) if cegid_colors else "Non spécifiée")
+                            )
+                            st.write(f"🎨 **Couleur(s) dispo :** {couleur_a_afficher}")
+    
+                            prix_a_afficher = (
+                                float(res['price']) if res.get('price') and float(res['price']) > 0
+                                else first_cegid_price
+                            )
+                            st.write(f"Prix : :green[{f'{prix_a_afficher:.2f} DT' if prix_a_afficher else 'Non défini'}]")
+    
+                            if df_cegid is not None:
+                                total_stock = df_cegid['Stock Qty'].sum()
+                                st.write(f"📦 **Stock total disponible :** {total_stock} paires")
+    
+                            score_val = res.get('score', 0.0)
+                            st.caption(f"Match : {score_val*100:.1f}%")
+                            st.progress(min(max(float(score_val), 0.0), 1.0))
+                            st.divider()
+    
+                            if df_cegid is not None:
+                                with st.expander(f"📊 Voir la disponibilité par Dépôt / Magasin ({len(df_cegid)} lignes)"):
+                                    st.dataframe(df_cegid, use_container_width=True, hide_index=True)
+                            else:
+                                st.caption("ℹ️ Aucune donnée de dépôt trouvée pour cette référence.")
 
         st.divider()
         with st.expander("📢 Un problème ? Article non trouvé ou erreur ?"):
@@ -532,6 +551,8 @@ elif menu == "🔐 Administration":
                         image.save(buffer, format="JPEG", quality=85)
                         buffer_data = buffer.getvalue()
 
+                        vec_str_db = f"[{','.join(map(str, embedding))}]"
+
                         conn = pg8000.connect(**DB_CONFIG)
                         cur  = conn.cursor()
                         cur.execute("SELECT image_paths FROM products WHERE product_ref = %s", (new_ref,))
@@ -541,14 +562,17 @@ elif menu == "🔐 Administration":
                             current_paths = row[0] if row[0] else ""
                             updated_paths = f"{current_paths}|{unique_name}" if current_paths else unique_name
                             cur.execute(
-                                "UPDATE products SET image_paths = %s, embedding = %s WHERE product_ref = %s",
-                                (updated_paths, str(embedding), new_ref)
+                                """UPDATE products
+                                   SET image_paths = %s, embedding = %s, embedding_vec = %s::vector
+                                   WHERE product_ref = %s""",
+                                (updated_paths, str(embedding), vec_str_db, new_ref)
                             )
                             action_type = "Mise à jour (Image ajoutée)"
                         else:
                             cur.execute(
-                                "INSERT INTO products (product_ref, image_paths, embedding) VALUES (%s, %s, %s)",
-                                (new_ref, unique_name, str(embedding))
+                                """INSERT INTO products (product_ref, image_paths, embedding, embedding_vec)
+                                   VALUES (%s, %s, %s, %s::vector)""",
+                                (new_ref, unique_name, str(embedding), vec_str_db)
                             )
                             action_type = "Nouveau Product Créé"
 
